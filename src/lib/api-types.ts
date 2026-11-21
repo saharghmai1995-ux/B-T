@@ -77,7 +77,7 @@ export interface AppStatePayload {
   settledSignals: AppSignal[];
   shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean };
+  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; historySeed: string | null };
   ingestSummary: {
     matchesUpserted: number;
     signalsCreated: number;
@@ -87,7 +87,23 @@ export interface AppStatePayload {
     notes: string[];
     ranAt: string;
   } | null;
+  historySeed: HistorySeedSummary | null;
   generatedAt: string;
+}
+
+export interface HistorySeedSummary {
+  skipped: boolean;
+  fixturesFetched: number;
+  matchesUpserted: number;
+  signalsSeeded: number;
+  won: number;
+  lost: number;
+  void: number;
+  accas: number;
+  vetoes: number;
+  posters: number;
+  notes: string[];
+  seededAt: string;
 }
 
 export interface IngestSummary {

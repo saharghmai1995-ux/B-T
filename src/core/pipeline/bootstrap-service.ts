@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
+import { seedHistoricalLedger, type HistorySeedSummary } from "./history-seed";
 import { getSettings, maskSettings, SETTING_KEYS } from "./settings";
 import { shinDevig } from "@/core/math/devig";
 
@@ -18,8 +19,9 @@ export interface AppState {
   settledSignals: AppSignal[];
   shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean };
+  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; historySeed: string | null };
   ingestSummary: IngestSummary | null;
+  historySeed: HistorySeedSummary | null;
   generatedAt: string;
 }
 
@@ -91,7 +93,7 @@ function fetchSignals() {
 }
 
 /** Assemble the full client state from the ledger (single source of truth). */
-export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | null }): Promise<AppState> {
+export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | null; historySeed?: HistorySeedSummary | null }): Promise<AppState> {
   const [matchRows, signals, vetoes, settings, ingest] = await Promise.all([
     db.match.findMany({
       orderBy: { startTime: "asc" },
@@ -147,13 +149,15 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
       oddsApi: !!settings[SETTING_KEYS.oddsApiKey],
       lastIngest: ingest?.lastRun.toISOString() ?? null,
       degraded: false,
+      historySeed: settings["historySeededAt"] ?? null,
     },
     ingestSummary: opts?.ingestSummary ?? null,
+    historySeed: opts?.historySeed ?? null,
     generatedAt: new Date().toISOString(),
   };
 }
 
-/** Cold-start entrypoint — guarantees a non-empty response. */
+/** Cold-start entrypoint — guarantees a non-empty, populated response. */
 export async function ensureBootstrapState(): Promise<AppState> {
   const matchCount = await db.match.count();
   const ingest = await db.ingestState.findUnique({ where: { id: "singleton" } });
@@ -162,11 +166,24 @@ export async function ensureBootstrapState(): Promise<AppState> {
   if (action === "AUTO_INGEST") {
     summary = await runIngest();
   }
-  const state = await bootstrapState({ ingestSummary: summary });
+  // Cold-start ledger backfill: real history seed when no settled rows exist.
+  const settledCount = await db.signal.count({ where: { status: { not: "OPEN" } } });
+  let seedSummary: HistorySeedSummary | null = null;
+  if (settledCount === 0) {
+    seedSummary = await seedHistoricalLedger();
+    if (seedSummary.signalsSeeded > 0) {
+      summary = summary ?? {
+        matchesUpserted: 0, quotesUpserted: 0, signalsCreated: 0, settledCount: 0,
+        accasCreated: 0, degraded: false, notes: ["Cold-start history seed applied"],
+        ranAt: new Date().toISOString(),
+      };
+    }
+  }
+  const state = await bootstrapState({ ingestSummary: summary, historySeed: seedSummary });
   // Absolute guard: even in a total network outage, never return zero matches.
   if (state.matches.length === 0) {
     const again = await runIngest();
-    if (again.matchesUpserted > 0) return bootstrapState({ ingestSummary: again });
+    if (again.matchesUpserted > 0) return bootstrapState({ ingestSummary: again, historySeed: seedSummary });
   }
   return state;
 }

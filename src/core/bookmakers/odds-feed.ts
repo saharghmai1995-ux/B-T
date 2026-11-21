@@ -17,7 +17,7 @@ export const FOOTBALL_LEAGUES = [
   "uefa.champions", "uefa.europa", "fifa.friendly",
 ] as const;
 
-const LEAGUE_NAMES: Record<string, string> = {
+export const LEAGUE_NAMES: Record<string, string> = {
   "eng.1": "English Premier League", "eng.2": "English Championship",
   "esp.1": "Spanish LaLiga", "esp.2": "Spanish LaLiga 2",
   "ita.1": "Italian Serie A", "ger.1": "German Bundesliga",
@@ -40,7 +40,10 @@ async function fetchJson(url: string, timeoutMs = 7000): Promise<unknown> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+    const res = await fetch(url, {
+      signal: ctl.signal, cache: "no-store",
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -225,6 +228,16 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
       const winnerIdx = cs.findIndex((c) => c.winner === true);
       const lines = (c: Record<string, unknown>) =>
         ((c.linescores as Array<{ value?: number }> | undefined) ?? []).map((l) => Number(l.value ?? 0));
+      const la = lines(cs[0]), lb = lines(cs[1]);
+      // Real set scores from per-set linescores (3-setters → 2-1, not 2-0).
+      let swA = 0, swB = 0;
+      if (winnerIdx >= 0 && la.length && la.length === lb.length) {
+        for (let i = 0; i < la.length; i++) {
+          if (la[i] > lb[i]) swA++;
+          else if (lb[i] > la[i]) swB++;
+        }
+      }
+      const finished = winnerIdx >= 0;
       const notes = ((comp.notes as Array<{ text?: string }> | undefined) ?? []).map((n) => n.text ?? "").join(" ");
       const retired = /retired|walkover|ret\./i.test(notes) ? true : null;
       out.push({
@@ -232,8 +245,8 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
         league: `${tour.toUpperCase()} · ${eventName}`, leagueCode: tour,
         homeName: a, awayName: b, homeRank: rankOf(cs[0]), awayRank: rankOf(cs[1]),
         startTime: new Date((comp.date as string) ?? (e.date as string)), status,
-        homeScore: winnerIdx === 0 ? 2 : winnerIdx === 1 ? 0 : null,
-        awayScore: winnerIdx === 1 ? 2 : winnerIdx === 0 ? 0 : null,
+        homeScore: finished ? (swA + swB > 0 ? swA : winnerIdx === 0 ? 2 : 0) : null,
+        awayScore: finished ? (swA + swB > 0 ? swB : winnerIdx === 1 ? 2 : 0) : null,
         detail: notes || null, surface: guessSurface(eventName), round: (e.shortName as string) ?? null,
         venue: ((comp.venue as Record<string, unknown>)?.fullName as string) ?? null,
         retired,
