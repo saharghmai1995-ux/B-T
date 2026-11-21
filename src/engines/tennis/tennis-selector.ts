@@ -4,6 +4,7 @@
  */
 
 import type { CandidateSignal, MatchContext } from "@/core/types";
+import type { LiveOddsRow } from "@/core/bookmakers/odds-feed";
 import { devigTwoWay, marginPrice, BOOK_MARGIN } from "@/core/math/devig";
 import { isEliteTennisTournament, getMarket } from "@/core/bookmakers/market-whitelist";
 import { runMarkovCopula } from "./markov-copula";
@@ -32,7 +33,7 @@ const TOP_RANK = 100;
 /** Build every whitelisted quote for one tennis fixture. */
 export function buildTennisQuotes(
   match: MatchContext,
-  liveOdds?: Map<string, { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number }>,
+  liveOdds?: Map<string, LiveOddsRow>,
 ): {
   quotes: TennisQuote[];
   elo: { a: number; b: number };
