@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import sharp from "sharp";
 import { db } from "@/lib/db";
 import { renderPosterSvg, type PosterKind, type PosterSpec } from "@/core/telegram/poster-renderer";
-import { getSetting, SETTING_KEYS } from "@/core/pipeline/settings";
+import { resolveBroadcastTarget, type BroadcastChannel } from "@/core/pipeline/settings";
+import { sendPhotoTo } from "@/core/telegram/bot-client";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -12,35 +13,34 @@ interface TelegramBody {
   signalId?: string;
   spec?: Partial<PosterSpec>;
   send?: boolean; // actually sendPhoto when bot token configured
+  channel?: BroadcastChannel; // "PUBLIC" | "VIP" | "DEFAULT" broadcast lane
 }
 
-/** POST /api/telegram — render poster (SVG→PNG) + optional sendPhoto, no caption. */
+/** POST /api/telegram — render poster (SVG→PNG) + optional sendPhoto to a lane. */
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as TelegramBody;
+    const lane: BroadcastChannel =
+      body.channel === "PUBLIC" || body.channel === "VIP" || body.channel === "DEFAULT"
+        ? body.channel
+        : "DEFAULT";
     const spec = await buildSpec(body);
     const svg = renderPosterSvg(spec);
     const png = await sharp(Buffer.from(svg)).png().toBuffer();
     const base64 = png.toString("base64");
     let sent = false;
     let transport = "preview";
+    let sendError: string | undefined;
 
     if (body.send) {
-      const token = await getSetting(SETTING_KEYS.telegramBotToken);
-      const chatId = await getSetting(SETTING_KEYS.telegramChatId);
-      if (token && chatId) {
-        const form = new FormData();
-        form.append("chat_id", chatId);
-        const blob = new Blob([new Uint8Array(png)], { type: "image/png" });
-        form.append("photo", blob, "poster.png");
-        const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-          method: "POST",
-          body: form,
-        });
-        sent = res.ok;
-        transport = res.ok ? "sendPhoto" : "sendPhoto_failed";
+      const chatId = await resolveBroadcastTarget(lane);
+      if (chatId) {
+        const result = await sendPhotoTo(chatId, new Uint8Array(png));
+        sent = result.ok;
+        transport = result.ok ? "sendPhoto" : "sendPhoto_failed";
+        sendError = result.error;
       } else {
-        transport = "missing_credentials";
+        transport = lane === "DEFAULT" ? "missing_credentials" : `channel_${lane.toLowerCase()}_unset`;
       }
     }
 
@@ -52,7 +52,7 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ ok: true, poster: { svg, pngBase64: base64, spec }, sent, transport });
+    return NextResponse.json({ ok: true, poster: { svg, pngBase64: base64, spec }, sent, transport, error: sendError, lane });
   } catch (err) {
     console.error("telegram render failed", err);
     return NextResponse.json(
