@@ -19,6 +19,7 @@ import {
 import { EmptyState, TeamAvatar, AnimatedNumber, HashChip } from "@/components/shared/primitives";
 import { lineLabel, statusColor, fmtPrice, fmtUnits } from "@/lib/api-types";
 import { formatSafeDateTime } from "@/lib/format";
+import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
 import { officialBetLine } from "@/lib/markets";
 import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert } from "lucide-react";
@@ -85,6 +86,10 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
   const [range, setRange] = useState<"all" | "7" | "30">("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [verify, setVerify] = useState<AppSignal | null>(null);
+  /* v2.5 — stake-policy comparison switch: view the WHOLE settled history
+   * replayed under Quarter-Kelly (1%–3.5% of running bank, recommended) or
+   * under a uniform Flat 20u (= 2% of the 1,000u bank). */
+  const [stakeView, setStakeView] = useState<"KELLY" | "FLAT20">("KELLY");
 
   const toggle = (id: string) => setExpanded((cur) => (cur === id ? null : id));
 
@@ -121,6 +126,42 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
     }
     return r;
   }, [state.settledSignals, sport, status, league, range, q]);
+
+  /* v2.5 — chronological replay of the settled history under the selected
+   * staking policy. Honest math: each bet stakes the policy amount of the
+   * RUNNING bank before that bet; WON/LOST/VOID verdicts never change. */
+  const policyView = useMemo(() => {
+    const ordered = [...state.settledSignals]
+      .filter((s) => s.status !== "OPEN")
+      .sort(
+        (a, b) =>
+          new Date(a.settledAt ?? a.lockedAt).getTime() -
+          new Date(b.settledAt ?? b.lockedAt).getTime(),
+      );
+    let bank = 1000;
+    const rowsMap = new Map<string, { stake: number; netProfit: number }>();
+    const curve: Array<{ date: string; bankroll: number }> = [];
+    for (const s of ordered) {
+      const stake = stakeView === "KELLY"
+        ? (calculateSafeQuarterKellyStake(s.modelProb, s.price, bank).stakeUnits || 10)
+        : 20; // Flat 20u = 2% of the starting bank
+      const net = s.status === "WON"
+        ? Math.round(stake * (s.price - 1) * 100) / 100
+        : s.status === "LOST"
+          ? -stake
+          : 0;
+      bank = Math.round((bank + net) * 100) / 100;
+      rowsMap.set(s.id, { stake, netProfit: net });
+      curve.push({ date: (s.settledAt ?? s.lockedAt).slice(0, 10), bankroll: bank });
+    }
+    const pnl = Math.round((bank - 1000) * 100) / 100;
+    const stakedTotal = ordered.reduce((acc, s) => acc + (rowsMap.get(s.id)?.stake ?? 0), 0);
+    return {
+      rowsMap, curve, endBank: bank, pnl,
+      roi: stakedTotal > 0 ? Math.round((pnl / stakedTotal) * 1000) / 10 : 0,
+      count: ordered.length,
+    };
+  }, [state.settledSignals, stakeView]);
 
   /* CSV / JSON audit export (includes lockedAt) */
   function download(kind: "csv" | "json") {
@@ -180,7 +221,10 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
     };
   });
 
-  const lastEq = m.equityCurve.length > 0 ? m.equityCurve[m.equityCurve.length - 1] : null;
+  const lastEq = policyView.curve.length > 0
+    ? policyView.curve[policyView.curve.length - 1]
+    : null;
+  const equityData = policyView.curve.length > 0 ? policyView.curve : m.equityCurve;
 
   return (
     <div className="space-y-4" data-testid="ledger-view">
@@ -188,8 +232,42 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
       <Card className="glass p-4" data-testid="ledger-charts">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-bold text-cyan-200">📊 نمودارهای تحلیلی کارنامه</h2>
+          {/* v2.5 — stake-policy comparison switch */}
+          <div className="flex items-center gap-1 rounded-xl border border-slate-700/70 bg-secondary/60 p-1">
+            <button
+              onClick={() => setStakeView("KELLY")}
+              className={cn(
+                "rounded-lg px-2.5 py-1.5 text-[11px] transition-colors",
+                stakeView === "KELLY" ? "bg-emerald-500/15 text-emerald-300" : "text-muted-foreground hover:text-foreground",
+              )}
+              title="بازپخش کل تاریخچه با کلِی یک‌چهارم ۱٪ تا ۳.۵٪ بانک جاری — پیشنهادی"
+            >
+              🛡️ کلِی یک‌چهارم (۱٪–۳.۵٪ بانک — پیشنهادی)
+            </button>
+            <button
+              onClick={() => setStakeView("FLAT20")}
+              className={cn(
+                "rounded-lg px-2.5 py-1.5 text-[11px] transition-colors",
+                stakeView === "FLAT20" ? "bg-violet-500/15 text-violet-300" : "text-muted-foreground hover:text-foreground",
+              )}
+              title="بازپخش کل تاریخچه با استیک یکسان ۲۰ واحد (۲٪ بانک ۱۰۰۰ واحدی)"
+            >
+              📊 استیک یکسان (Flat 20u = 2% بانک)
+            </button>
+          </div>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
+            بانک پایانی بازپخش: <span className="num font-bold text-emerald-300" dir="ltr">{fmtUnits(policyView.endBank, 1)}u</span>
+          </span>
+          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
+            سود/زیان کل: <span className={cn("num font-bold", policyView.pnl >= 0 ? "text-emerald-300" : "text-red-300")} dir="ltr">{policyView.pnl >= 0 ? "+" : ""}{fmtUnits(policyView.pnl, 1)}u</span>
+          </span>
+          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
+            ROI: <span className="num font-bold text-cyan-300" dir="ltr">{policyView.roi >= 0 ? "+" : ""}{policyView.roi}%</span>
+          </span>
           <span className="text-[10px] text-muted-foreground">
-            تحلیل تجمیعی همه تسویه‌شده‌ها — مستقل از فیلترهای جدول
+            بازپخش صادقانه {policyView.count} تسویه به‌ترتیب زمانی — برد/باخت ثابت، فقط استیک با سیاست انتخابی محاسبه می‌شود
           </span>
         </div>
 
@@ -202,14 +280,14 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                 {lastEq ? `${fmtUnits(lastEq.bankroll, 1)}u` : "—"}
               </span>
             </div>
-            {m.equityCurve.length === 0 ? (
+            {equityData.length === 0 ? (
               <div className="grid flex-1 place-items-center text-[11px] text-muted-foreground">
                 داده‌ای برای منحنی سرمایه ثبت نشده است
               </div>
             ) : (
               <div className="h-44" dir="ltr" style={{ filter: "drop-shadow(0 0 8px rgba(52, 211, 153, 0.18))" }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={m.equityCurve} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                  <AreaChart data={equityData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="ledgerEquity" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#34D399" stopOpacity={0.5} />
@@ -482,9 +560,18 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                       <span className="font-bold text-slate-200">{lineLabel(s.line)}</span>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">استیک:</span>{" "}
+                      <span className="text-muted-foreground">استیک ثبت‌شده:</span>{" "}
                       <span className="num" dir="ltr">{fmtUnits(s.stake, 0)}u</span>{" "}
                       <span className="text-[10px] text-slate-400">({s.stakeMode})</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">استیک نمای سیاست:</span>{" "}
+                      <span className="num text-amber-300" dir="ltr">
+                        {fmtUnits(policyView.rowsMap.get(s.id)?.stake ?? s.stake, 1)}u
+                      </span>{" "}
+                      <span className="text-[10px] text-slate-400">
+                        ({stakeView === "KELLY" ? "Quarter-Kelly" : "Flat 20u"} · سود: {fmtUnits(policyView.rowsMap.get(s.id)?.netProfit ?? 0, 1)}u)
+                      </span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">احتمال مدل:</span>{" "}

@@ -75,7 +75,9 @@ export function buildTennisQuotes(
     const key = tennisOddsKey(match.homeName, match.awayName);
     const row = liveOdds.get(`${key}|1XBET_LIVE`) ?? liveOdds.get(`${key}|PINNACLE`);
     if (row?.home && row?.away && row.home > 1.01 && row.away > 1.01) {
-      const [pH] = devigTwoWay(row.home, row.away);
+      const fair = devigTwoWay(row.home, row.away);
+      const pH = fair.over; // first input (home) fair probability
+      const pA = fair.under;
       const liveWinner: TennisQuote = {
         marketKey: "winner", selection: "HOME",
         modelProb: res.probs["winner@HOME"] ?? consensus.probs["winner@HOME"] ?? pH,
@@ -83,8 +85,8 @@ export function buildTennisQuotes(
       };
       const liveAway: TennisQuote = {
         marketKey: "winner", selection: "AWAY",
-        modelProb: res.probs["winner@AWAY"] ?? consensus.probs["winner@AWAY"] ?? (1 - pH),
-        trueProb: 1 - pH, price: row.away, source: "LIVE",
+        modelProb: res.probs["winner@AWAY"] ?? consensus.probs["winner@AWAY"] ?? pA,
+        trueProb: pA, price: row.away, source: "LIVE",
       };
       // LIVE rows replace their ESTIMATE twin so provenance stays honest.
       const filtered = quotes.filter(
