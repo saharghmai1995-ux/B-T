@@ -113,7 +113,17 @@ export interface AppStatePayload {
   settledSignals: AppSignal[];
   shadowVetoes: AppVeto[];
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; oddsApiIo: boolean; lastIngest: string | null; degraded: boolean; mode?: "LIVE" | "OFFLINE"; historySeed: string | null };
+  health: {
+    espn: boolean; oddsApi: boolean; oddsApiIo: boolean;
+    lastIngest: string | null; degraded: boolean; mode?: "LIVE" | "OFFLINE";
+    historySeed: string | null;
+    /* v2.5 — The Odds API v4 credit shield telemetry */
+    oddsApiCredits?: string | null;
+    oddsApiCachedAt?: string | null;
+    oddsApiSportKeys?: string[];
+    oddsApiError?: string | null;
+    oddsApiKeyFromEnv?: boolean;
+  };
   ingestSummary: {
     matchesUpserted: number;
     signalsCreated: number;

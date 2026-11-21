@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useAppState } from "@/components/layout/AppShell";
+import { formatSafeDateTime } from "@/lib/format";
 import type { AppStatePayload } from "@/lib/api-types";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -87,9 +88,40 @@ export default function SystemVaultView({ state }: { state: AppStatePayload }) {
             </div>
           </div>
           <div className={cn("rounded-xl border px-3 py-2.5", s.health.oddsApi ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5")}>
-            <div className="font-bold">The Odds API v4</div>
-            <div className="mt-1 text-[10px] text-muted-foreground">
-              {s.health.oddsApi ? "فعال — 1xBet/Pinnacle LIVE" : "بدون کلید — حالت MODEL FAIR PRICE"}
+            <div className="flex items-center justify-between gap-1 font-bold">
+              <span>The Odds API v4</span>
+              {s.health.oddsApiCredits && (
+                <span className="num rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300" dir="ltr" title="اعتبار باقی‌مانده از سهمیه ۵۰۰ اعتباری ماهانه (x-requests-remaining)">
+                  {s.health.oddsApiCredits}/500
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              {s.health.oddsApi ? (
+                <>
+                  فعال — 1xBet/Pinnacle LIVE
+                  {s.health.oddsApiKeyFromEnv && <span className="mx-1 text-cyan-300">(کلید از .env.local)</span>}
+                  <br />
+                  کش ۴۵ دقیقه‌ای:{" "}
+                  <span className="num" dir="ltr">
+                    {s.health.oddsApiCachedAt ? formatSafeDateTime(s.health.oddsApiCachedAt) : "در انتظار اولین واکشی"}
+                  </span>
+                  {typeof s.health.oddsApiSportKeys === "undefined" || (s.health.oddsApiSportKeys?.length ?? 0) === 0 ? null : (
+                    <>
+                      <br />
+                      کلیدهای کش‌شده: <span className="num" dir="ltr">{s.health.oddsApiSportKeys.join(", ")}</span>
+                    </>
+                  )}
+                  {s.health.oddsApiError && (
+                    <>
+                      <br />
+                      <span className="text-red-300">آخرین خطا: <span className="num" dir="ltr">{s.health.oddsApiError}</span></span>
+                    </>
+                  )}
+                </>
+              ) : (
+                "بدون کلید — حالت MODEL FAIR PRICE"
+              )}
             </div>
           </div>
           <div className={cn("rounded-xl border px-3 py-2.5", s.health.oddsApiIo ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5")}>

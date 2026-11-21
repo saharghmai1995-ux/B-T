@@ -11,6 +11,7 @@ import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
 import { seedRealHistory, type HistorySeedSummary } from "./real-history-backfill";
 import { getSettings, maskSettings, SETTING_KEYS } from "./settings";
+import { getOddsFeedStats } from "@/core/bookmakers/odds-feed";
 import { shinDevig } from "@/core/math/devig";
 
 export interface AppState {
@@ -20,7 +21,17 @@ export interface AppState {
   settledSignals: AppSignal[];
   shadowVetoes: AppVeto[];
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; oddsApiIo: boolean; lastIngest: string | null; degraded: boolean; mode: "LIVE" | "OFFLINE"; historySeed: string | null };
+  health: {
+    espn: boolean; oddsApi: boolean; oddsApiIo: boolean;
+    lastIngest: string | null; degraded: boolean; mode: "LIVE" | "OFFLINE";
+    historySeed: string | null;
+    /* v2.5 — The Odds API v4 credit shield telemetry */
+    oddsApiCredits: string | null;
+    oddsApiCachedAt: string | null;
+    oddsApiSportKeys: string[];
+    oddsApiError: string | null;
+    oddsApiKeyFromEnv: boolean;
+  };
   ingestSummary: IngestSummary | null;
   historySeed: HistorySeedSummary | null;
   generatedAt: string;
@@ -193,6 +204,10 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   }
   const degraded = opts?.ingestSummary?.degraded ?? lastDegraded ?? false;
 
+  // v2.5 — The Odds API v4 credit-shield telemetry for the Settings card.
+  const oddsStats = getOddsFeedStats();
+  const oddsKeyFromEnv = !settings[SETTING_KEYS.oddsApiKey] && !!process.env.THE_ODDS_API_KEY;
+
   return {
     metrics,
     matches,
@@ -208,12 +223,17 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     settings: maskSettings(settings),
     health: {
       espn: matches.length > 0,
-      oddsApi: !!settings[SETTING_KEYS.oddsApiKey],
+      oddsApi: !!(settings[SETTING_KEYS.oddsApiKey] || process.env.THE_ODDS_API_KEY),
       oddsApiIo: !!settings[SETTING_KEYS.oddsApiIoKey],
       lastIngest: ingest?.lastRun.toISOString() ?? null,
       degraded,
       mode: degraded ? "OFFLINE" : "LIVE",
       historySeed: settings["historySeededAt"] ?? null,
+      oddsApiCredits: oddsStats.remainingCredits,
+      oddsApiCachedAt: oddsStats.lastFetchAt ? new Date(oddsStats.lastFetchAt).toISOString() : null,
+      oddsApiSportKeys: oddsStats.cachedSportKeys,
+      oddsApiError: oddsStats.lastError,
+      oddsApiKeyFromEnv: oddsKeyFromEnv,
     },
     ingestSummary: opts?.ingestSummary ?? null,
     historySeed: opts?.historySeed ?? null,
