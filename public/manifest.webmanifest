@@ -1,0 +1,19 @@
+{
+  "name": "NeoBet Quant Pro",
+  "short_name": "NeoBetQuant",
+  "description": "Football & Tennis Quant Signals Terminal — 1xBet / BetForward live odds",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060911",
+  "theme_color": "#060911",
+  "dir": "rtl",
+  "lang": "fa",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

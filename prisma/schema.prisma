@@ -1,0 +1,122 @@
+// NeoBet Quant Pro — unified football + tennis commercial SaaS
+// SQLite (local) — migratable to PostgreSQL/Supabase.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// One row per fixture/event (football match or tennis match).
+model Match {
+  id          String      @id @default(cuid())
+  sport       String // "football" | "tennis"
+  league      String // English display name, e.g. "English Premier League"
+  leagueCode  String // ESPN code, e.g. "eng.1" | "wta"
+  espnEventId String @unique
+  homeName    String
+  awayName    String
+  homeRank    Int? // tennis: player A ranking
+  awayRank    Int? // tennis: player B ranking
+  startTime   DateTime
+  status      String // "pre" | "in" | "post"
+  homeScore   Int?
+  awayScore   Int?
+  detail      String? // FT note / set score string
+  surface     String? // tennis: Hard | Clay | Grass
+  round       String?
+  venue       String?
+  source      String @default("ESPN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  odds        OddsQuote[]
+  signals     Signal[]
+
+  @@index([sport, status, startTime])
+  @@index([leagueCode])
+}
+
+// Every priced selection stored with its honest provenance.
+model OddsQuote {
+  id         String   @id @default(cuid())
+  match      Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  matchId    String
+  bookmaker  String // "ESPN_DK_REF" | "1XBET_EST" | "1XBET_LIVE" | "BETFORWARD_EST"
+  marketKey  String
+  selection  String
+  price      Float
+  trueProb   Float // market-consensus probability the price is derived from
+  source     String // "LIVE_REF" | "ESTIMATE"
+  capturedAt DateTime @default(now())
+
+  @@unique([matchId, bookmaker, marketKey, selection])
+  @@index([matchId])
+}
+
+// A tradable recommendation issued by one of the 3 production lines.
+model Signal {
+  id          String    @id @default(cuid())
+  match       Match     @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  matchId     String
+  sport       String
+  line        String // "SINGLE_EV" | "ACCA2" | "ARB"
+  marketKey   String
+  marketLabel String
+  selection   String
+  modelProb   Float
+  trueProb    Float
+  price       Float
+  evPct       Float
+  stake       Float
+  stakeMode   String // "FLAT_100" | "KELLY_025"
+  legs        String? // JSON: acca legs [{label, price, prob}]
+  arbBooks    String? // JSON: [{book, selection, price}]
+  shaHash     String    @unique
+  status      String    @default("OPEN") // OPEN | WON | LOST | VOID
+  netProfit   Float?
+  settledAt   DateTime?
+  dayKey      String // Tehran-locale YYYY-MM-DD — free-signal accounting
+  createdAt   DateTime  @default(now())
+
+  @@index([status, sport])
+  @@index([line])
+  @@index([dayKey])
+}
+
+// Key-value store for API keys, tier demo switch, telegram config.
+model Setting {
+  key   String @id
+  value String
+}
+
+// Outbox/audit log for telegram poster renders and sends.
+model PosterLog {
+  id        String   @id @default(cuid())
+  kind      String // SIGNAL | WIN | LOSS | TEASER
+  signalId  String?
+  title     String
+  sent      Boolean  @default(false)
+  transport String   @default("preview") // preview | sendPhoto
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Singleton sync state for the ingest pipeline.
+model IngestState {
+  id          String   @id @default("singleton")
+  lastRun     DateTime @default(now())
+  lastSummary String
+}
+
+// Shadow ledger: supervisor vetoes that never touched the bank.
+model ShadowVeto {
+  id        String   @id @default(cuid())
+  signalRef String
+  reason    String
+  category  String
+  createdAt DateTime @default(now())
+}

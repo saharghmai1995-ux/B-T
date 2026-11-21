@@ -1,0 +1,170 @@
+/**
+ * Settlement Engine — auto-settles finished fixtures (ESPN post state).
+ * Football settles on 90-minute regular time; tennis on full match
+ * completion with retirement voided at 1.00. Zero contradictions: the same
+ * resolver drives every market kind from the whitelist.
+ */
+
+import type { SettledRow } from "@/core/types";
+import { settleNetProfit, statusFromProfit } from "./ledger-service";
+import { round2 } from "@/core/math/devig";
+
+export interface FixtureResult {
+  sport: string;
+  homeScore: number;
+  awayScore: number;
+  retired: boolean;
+  detail?: string | null;
+}
+
+export type SettleVerdict = { status: "WON" | "LOST" | "VOID"; factor: number };
+
+/**
+ * Resolve one whitelisted selection against a final score.
+ * marketKey@selection is the same vocabulary the selectors issued.
+ * factor: 1 = full settle, 0.5 = quarter-line half win (honest half stake).
+ */
+export function resolveSelection(key: string, sel: string, r: FixtureResult): SettleVerdict {
+  if (r.sport === "tennis") return { status: resolveTennis(key, sel, r), factor: 1 };
+  const h = r.homeScore, a = r.awayScore;
+  const total = h + a;
+  const res = h > a ? "HOME" : h < a ? "AWAY" : "DRAW";
+  switch (key) {
+    case "1x2":
+      return { status: sel === res ? "WON" : "LOST", factor: 1 };
+    case "dc_1x":
+      return { status: res === "HOME" || res === "DRAW" ? "WON" : "LOST", factor: 1 };
+    case "dc_x2":
+      return { status: res === "AWAY" || res === "DRAW" ? "WON" : "LOST", factor: 1 };
+    case "dnb":
+      if (res === "DRAW") return { status: "VOID", factor: 1 };
+      return { status: sel === res ? "WON" : "LOST", factor: 1 };
+    case "ah_home_-0.5":
+      return { status: h - a > 0.5 ? "WON" : "LOST", factor: 1 };
+    case "ah_home_-0.75": {
+      const m = h - a; // split -0.5 / -1.0
+      if (m >= 2) return { status: "WON", factor: 1 };
+      if (m === 1) return { status: "WON", factor: 0.5 }; // half win, half push
+      return { status: "LOST", factor: 1 };
+    }
+    case "ah_home_-1.0":
+      if (h - a >= 2) return { status: "WON", factor: 1 };
+      if (h - a === 1) return { status: "VOID", factor: 1 }; // push
+      return { status: "LOST", factor: 1 };
+    case "ah_away_-0.5":
+      return { status: a - h > 0.5 ? "WON" : "LOST", factor: 1 };
+    case "ah_away_-0.75": {
+      const m = a - h;
+      if (m >= 2) return { status: "WON", factor: 1 };
+      if (m === 1) return { status: "WON", factor: 0.5 };
+      return { status: "LOST", factor: 1 };
+    }
+    case "ah_away_-1.0":
+      if (a - h >= 2) return { status: "WON", factor: 1 };
+      if (a - h === 1) return { status: "VOID", factor: 1 };
+      return { status: "LOST", factor: 1 };
+    case "ou_1.5":
+    case "ou_2.5":
+    case "ou_3.5": {
+      const line = Number(key.slice(3));
+      if (total === line) return { status: "VOID", factor: 1 };
+      return { status: (sel === "OVER") === total > line ? "WON" : "LOST", factor: 1 };
+    }
+    case "btts":
+      return { status: (sel === "YES") === (h > 0 && a > 0) ? "WON" : "LOST", factor: 1 };
+    case "tt_home_o1.5":
+      return { status: h > 1.5 ? "WON" : "LOST", factor: 1 };
+    case "tt_away_o1.5":
+      return { status: a > 1.5 ? "WON" : "LOST", factor: 1 };
+    case "combo_1x_u3.5":
+      return { status: (res === "HOME" || res === "DRAW") && total < 3.5 ? "WON" : "LOST", factor: 1 };
+    case "combo_home_o1.5":
+      return { status: res === "HOME" && h > 1.5 && total > 1.5 ? "WON" : "LOST", factor: 1 };
+    default:
+      return { status: "VOID", factor: 1 };
+  }
+}
+
+function resolveTennis(key: string, sel: string, r: FixtureResult): SettleVerdict["status"] {
+  if (r.retired) return "VOID"; // Retirement → void at 1.00 (full match rule)
+  const setsA = r.homeScore, setsB = r.awayScore;
+  const winner = setsA > setsB ? "HOME" : setsB > setsA ? "AWAY" : null;
+  if (!winner) return "VOID";
+  switch (key) {
+    case "winner":
+      return sel === winner ? "WON" : "LOST";
+    case "setbet_2_0": {
+      const won = winner === sel && (sel === "HOME" ? setsA === 2 && setsB === 0 : setsB === 2 && setsA === 0);
+      return won ? "WON" : "LOST";
+    }
+    case "setbet_2_1": {
+      const won = winner === sel && (sel === "HOME" ? setsA === 2 && setsB === 1 : setsB === 2 && setsA === 1);
+      return won ? "WON" : "LOST";
+    }
+    case "tot_sets_o2.5": {
+      const t = setsA + setsB;
+      if (t === 2.5) return "VOID";
+      return (sel === "OVER") === t > 2.5 ? "WON" : "LOST";
+    }
+    case "sethand_home_-1.5":
+      return setsA - setsB > 1.5 ? "WON" : "LOST";
+    case "sethand_home_+1.5":
+      return setsA + 1.5 > setsB ? "WON" : "LOST";
+    case "sethand_away_-1.5":
+      return setsB - setsA > 1.5 ? "WON" : "LOST";
+    case "sethand_away_+1.5":
+      return setsB + 1.5 > setsA ? "WON" : "LOST";
+    case "tot_games_o20.5":
+    case "tot_games_o21.5":
+    case "tot_games_o22.5": {
+      // Games come from the detail string (e.g. "6-4 3-6 6-1").
+      const games = gamesFromDetail(r.detail);
+      if (games == null) return "VOID";
+      const line = Number(key.slice(12));
+      return (sel === "OVER") === games > line ? "WON" : "LOST";
+    }
+    case "gamehand_home_-3.5":
+    case "gamehand_home_+3.5":
+    case "gamehand_away_-3.5":
+    case "gamehand_away_+3.5": {
+      const games = gamesFromDetail(r.detail);
+      if (games == null) return "VOID";
+      const ga = gamesFromDetail(r.detail, "A") ?? 0;
+      const gb = gamesFromDetail(r.detail, "B") ?? 0;
+      const m = key.includes("home") ? ga - gb : gb - ga;
+      const line = Number(key.split("_").pop()?.replace("+", "") ?? "0");
+      return m + line > 0 ? "WON" : "LOST";
+    }
+    default:
+      return "VOID";
+  }
+}
+
+/** Parse total games (or per-player) from a set-score detail string. */
+export function gamesFromDetail(detail: string | null | undefined, side?: "A" | "B"): number | null {
+  if (!detail) return null;
+  const sets = detail.match(/\d+-\d+(\s*\(\d+\))?/g);
+  if (!sets || sets.length === 0) return null;
+  let a = 0, b = 0;
+  for (const s of sets) {
+    const m = s.match(/(\d+)-(\d+)/);
+    if (!m) continue;
+    a += Number(m[1]);
+    b += Number(m[2]);
+  }
+  if (side === "A") return a;
+  if (side === "B") return b;
+  return a + b;
+}
+
+/** Settle one row honestly and return the ledger fields to persist. */
+export function settleRow(row: SettledRow, r: FixtureResult): {
+  status: SettledRow["status"];
+  netProfit: number;
+  settledAt: Date;
+} {
+  const v = resolveSelection(row.marketKey, row.selection, r);
+  const netProfit = round2(settleNetProfit(v.status, row.stake * v.factor, row.price));
+  const status = statusFromProfit(netProfit, v.status);
+  return { status, netProfit, settledAt: new Date() };
+}
