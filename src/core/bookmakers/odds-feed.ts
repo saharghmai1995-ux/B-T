@@ -371,7 +371,17 @@ interface OddsCacheEntry {
   events: Array<Record<string, unknown>>;
 }
 
-const liveOddsCache = new Map<string, OddsCacheEntry>();
+/**
+ * The cache + quota stats live on `globalThis`: Next dev compiles each API
+ * route as its own bundle (separate module instances), so a module-scoped Map
+ * would double-fetch and double-count. One process → one cache → the
+ * 45-minute credit shield actually shields the 500-credit monthly quota.
+ */
+const g = globalThis as unknown as {
+  __neobetOddsCache?: Map<string, OddsCacheEntry>;
+  __neobetOddsStats?: OddsFeedStats;
+};
+const liveOddsCache = (g.__neobetOddsCache ??= new Map<string, OddsCacheEntry>());
 
 export interface OddsFeedStats {
   remainingCredits: string | null;
@@ -380,9 +390,9 @@ export interface OddsFeedStats {
   lastError: string | null;
 }
 
-const feedStats: OddsFeedStats = {
+const feedStats: OddsFeedStats = (g.__neobetOddsStats ??= {
   remainingCredits: null, lastFetchAt: null, cachedSportKeys: [], lastError: null,
-};
+});
 
 /** Snapshot of the Odds API usage state for the Settings status card. */
 export function getOddsFeedStats(): OddsFeedStats {
