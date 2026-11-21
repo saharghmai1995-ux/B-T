@@ -21,7 +21,7 @@ import { fetchFootballStandings, FOOTBALL_LEAGUES } from "@/core/bookmakers/odds
 import { getMarket } from "@/core/bookmakers/market-whitelist";
 import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
 import { resolveSelection } from "@/core/ledger/settlement-engine";
-import { chooseStakeMode, accaPrice, STARTING_BANK } from "@/core/math/kelly";
+import { chooseStakeMode, accaPrice, STARTING_BANK, calculateSafeQuarterKellyStake, MIN_STAKE } from "@/core/math/kelly";
 import { round2 } from "@/core/math/devig";
 import { lockSignal } from "@/core/ledger/sha256-chain";
 import { tehranDayKey } from "./ingest-service";
@@ -323,7 +323,8 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
       const legs = [leg, b];
       const price = accaPrice(legs.map((l) => l.price));
       const prob = legs.reduce((acc, l) => acc * l.modelProb, 1);
-      const stake = 100;
+      // v2.5 unified staking — ACCA legs stake with the SAME Quarter-Kelly rule.
+      const stake = chooseStakeMode(prob, price, bank).stake;
       const verdicts = legs.map((l) => resolveSelection(l.marketKey, l.selection, l.fixture));
       const lostLeg = verdicts.some((v) => v.status === "LOST");
       const eff = legs.reduce((acc, l, j) => acc * (verdicts[j].status === "WON" ? l.price : 1), 1);
@@ -341,7 +342,7 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
           matchId: leg.matchId, sport: legs[0].sport, line: "ACCA2", marketKey: "acca2",
           marketLabel: "2-Leg Smart Accumulator", selection: "ACCA",
           modelProb: round2(prob), trueProb: round2(prob), price, evPct: round2(prob * price - 1),
-          stake, stakeMode: "FLAT_100",
+          stake, stakeMode: "KELLY_025",
           legs: JSON.stringify(legs.map((l) => ({
             espnEventId: l.espnEventId, label: l.label, marketKey: l.marketKey,
             selection: l.selection, price: l.price, prob: l.modelProb,
@@ -399,13 +400,16 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
     let savedUnits: number | null = null;
     if (v.wouldHaveBeen) {
       const pick = v.wouldHaveBeen;
+      // v2.5 unified staking — the shadow book values vetoes at the SAME
+      // Quarter-Kelly stake the signal center would have issued (1%-3.5% band).
+      const refStake = calculateSafeQuarterKellyStake(pick.modelProb, pick.price).stakeUnits || MIN_STAKE;
       const verdict_ = resolveSelection(pick.marketKey, pick.selection, pick.fixture);
       if (verdict_.status === "LOST") {
         verdict = "SAVED_LOSS";
-        savedUnits = 100; // flat stake spared by the veto
+        savedUnits = refStake; // stake spared by the veto
       } else if (verdict_.status === "WON") {
         verdict = "MISSED_WIN";
-        savedUnits = round2(-100 * (pick.price - 1)); // honest opportunity cost
+        savedUnits = round2(-refStake * (pick.price - 1)); // honest opportunity cost
       } else {
         verdict = "PENDING";
         savedUnits = 0;

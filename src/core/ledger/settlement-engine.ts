@@ -3,6 +3,9 @@
  * Football settles on 90-minute regular time; tennis on full match
  * completion with retirement voided at 1.00. Zero contradictions: the same
  * resolver drives every market kind from the whitelist.
+ * v2.5 STAKING: settlement NEVER invents stakes — every row settles at the
+ * stake locked on its signal (Quarter-Kelly 1%–3.5% of bank at issue time,
+ * unified by src/core/math/kelly.ts calculateSafeQuarterKellyStake).
  */
 
 import type { SettledRow } from "@/core/types";

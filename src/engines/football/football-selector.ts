@@ -7,6 +7,7 @@
 
 import type { CandidateSignal, MatchContext, TeamStat } from "@/core/types";
 import { devig1x2, devigTwoWay, marginPrice, BOOK_MARGIN } from "@/core/math/devig";
+import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import { TOXIC_LEAGUES, assertMarketAllowed, getMarket } from "@/core/bookmakers/market-whitelist";
 import { runDixonColes, stats1x2From, type TeamLite } from "./dixon-coles";
 export interface FootballQuote {
@@ -91,11 +92,13 @@ export function pickSingleEv(
   }
   if (!best) return null;
   const ev = best.modelProb * best.price - 1;
+  // v2.5 unified staking — candidates carry the SAME Quarter-Kelly stake.
+  const stake = calculateSafeQuarterKellyStake(best.modelProb, best.price).stakeUnits || 20;
   return {
     match, line: "SINGLE_EV", marketKey: best.marketKey,
     marketLabel: getMarket(best.marketKey)?.label ?? best.marketKey, selection: best.selection,
     modelProb: best.modelProb, trueProb: best.trueProb, price: best.price,
-    evPct: Math.round(ev * 1000) / 10, stake: 100, stakeMode: "FLAT_100",
+    evPct: Math.round(ev * 1000) / 10, stake, stakeMode: "KELLY_025",
   };
 }
 
@@ -120,10 +123,12 @@ export function pickCrossBookArb(
     const pb = sel === "HOME" ? b.away : b.home;
     if (!pa || !pb) continue;
     if (1 / pa + 1 / pb <= 0.94) {
+      const modelProb = 1 / pa / (1 / pa + 1 / pb);
+      const stake = calculateSafeQuarterKellyStake(modelProb, pa).stakeUnits || 20;
       return {
         match, line: "ARB", marketKey: "1x2", marketLabel: "1X2 Full-Time Result",
-        selection: sel, modelProb: 1 / pa / (1 / pa + 1 / pb), trueProb: 1 / pa / (1 / pa + 1 / pb),
-        price: pa, evPct: 0, stake: 100, stakeMode: "FLAT_100",
+        selection: sel, modelProb, trueProb: modelProb,
+        price: pa, evPct: 0, stake, stakeMode: "KELLY_025",
         arbBooks: [
           { book: a.book, selection: sel, price: pa },
           { book: b.book, selection: sel === "HOME" ? "AWAY" : "HOME", price: pb },

@@ -261,17 +261,20 @@ async function buildAccas(pack: GatheredPack): Promise<number> {
   const price = accaPrice(legs.map((l) => l.price));
   const prob = legs.reduce((acc, l) => acc * l.prob, 1);
   const matchId = l1.matchId;
+  // v2.5 unified staking — ACCA stakes with the SAME Quarter-Kelly rule.
+  const bank = await currentBankroll();
+  const accaStake = chooseStakeMode(prob, price, bank).stake;
   const hash = lockSignal({
     matchInfo: legs.map((l) => l.label).join(" + "), sport: "multi", line: "ACCA2",
     marketKey: "acca2", selection: "ACCA", price, modelProb: prob, evPct: prob * price - 1,
-    stake: 100, issuedAt: new Date().toISOString(),
+    stake: accaStake, issuedAt: new Date().toISOString(),
   });
   await db.signal.create({
     data: {
       matchId, sport: "football", line: "ACCA2", marketKey: "acca2",
       marketLabel: "2-Leg Smart Accumulator", selection: "ACCA",
       modelProb: prob, trueProb: prob, price, evPct: round2(prob * price - 1),
-      stake: 100, stakeMode: "FLAT_100", legs: JSON.stringify(legs),
+      stake: accaStake, stakeMode: "KELLY_025", legs: JSON.stringify(legs),
       shaHash: hash, dayKey: tehranDayKey(new Date()),
     },
   });
