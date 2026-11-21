@@ -109,8 +109,19 @@ export interface MasterMetrics {
     bySport: Record<string, number>;
     byLeague: Record<string, number>;
   };
-  equityCurve: Array<{ date: string; bankroll: number }>;
+  /** Per-sport buckets for the 3D gyroscope winrate gauge. */
+  sportStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  /** Per-market-family buckets for the ledger analytics (1X2 / AH / DC / Totals / …). */
+  marketStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  /** Per-league buckets for the league breakdown bars. */
+  leagueStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  /** Daily net PnL split by sport (Daily PnL bars). */
+  dailyPnl: Array<{ date: string; football: number; tennis: number }>;
+  equityCurve: Array<{ date: string; bankroll: number; football: number; tennis: number }>;
   bankrollToday: number;
+  /** REAL shadow-ledger savings (signed: saved losses − missed wins). */
+  savedCapital: number;
+  savedCount: number;
 }
 
 /** Feed payload produced by bookmakers/odds-feed (network boundary). */
@@ -132,6 +143,8 @@ export interface FeedMatch {
   round?: string | null;
   venue?: string | null;
   retired?: boolean | null;
+  homeLogo?: string | null;
+  awayLogo?: string | null;
   refOdds?: {
     home?: number; // decimal prices from the reference market (ESPN provider)
     draw?: number;

@@ -31,20 +31,21 @@ export function tehranDayKey(d: Date): string {
 }
 
 async function upsertMatch(m: FeedMatch): Promise<string> {
-  const source = m.espnEventId.startsWith("sim-") ? "SIM" : "ESPN";
   const row = await db.match.upsert({
     where: { espnEventId: m.espnEventId },
     create: {
       espnEventId: m.espnEventId, sport: m.sport, league: m.league, leagueCode: m.leagueCode,
       homeName: m.homeName, awayName: m.awayName, homeRank: m.homeRank ?? null,
-      awayRank: m.awayRank ?? null, startTime: m.startTime, status: m.status,
+      awayRank: m.awayRank ?? null, homeLogo: m.homeLogo ?? null, awayLogo: m.awayLogo ?? null,
+      startTime: m.startTime, status: m.status,
       homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
       detail: m.detail ?? null, surface: m.surface ?? null, round: m.round ?? null,
-      venue: m.venue ?? null, source,
+      venue: m.venue ?? null, source: "ESPN",
     },
     update: {
       status: m.status, homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
       detail: m.detail ?? null, startTime: m.startTime,
+      homeLogo: m.homeLogo ?? undefined, awayLogo: m.awayLogo ?? undefined,
     },
   });
   return row.id;
@@ -282,21 +283,10 @@ export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestS
   const pack = opts?.feed ?? await gatherFeed();
   const all = [...pack.football, ...pack.tennis];
 
-  // Housekeeping: drop stale SIM fixtures that never received a signal —
-  // expired kickoffs (pre-in-past) and old finished sims keep the board clean.
-  // Matches WITH signals are ledger history and are never deleted.
-  await db.match.deleteMany({
-    where: {
-      source: "SIM", status: "pre", signals: { none: {} },
-      startTime: { lt: new Date(Date.now() - 12 * 3600_000) },
-    },
-  });
-  await db.match.deleteMany({
-    where: {
-      source: "SIM", signals: { none: {} },
-      startTime: { lt: new Date(Date.now() - 21 * 86400_000) },
-    },
-  });
+  // v2.0 ZERO-MOCK legacy purge: any simulated fixture left over from the
+  // removed sim-feed era is wiped once (cascade removes its SIM signals too).
+  const simPurge = await db.match.deleteMany({ where: { source: "SIM" } });
+  const purged = simPurge.count;
 
   const idByEspn = new Map<string, { id: string; sport: string }>();
   for (const m of all) {
@@ -311,6 +301,7 @@ export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestS
     signalsCreated: singles, settledCount, accasCreated,
     degraded: pack.degraded, notes: pack.notes, ranAt: new Date().toISOString(),
   };
+  if (purged > 0) summary.notes.push(`Legacy SIM rows purged: ${purged}`);
   await db.ingestState.upsert({
     where: { id: "singleton" },
     create: { id: "singleton", lastRun: new Date(), lastSummary: JSON.stringify(summary) },

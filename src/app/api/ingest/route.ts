@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { runIngest } from "@/core/pipeline/ingest-service";
 import { bootstrapState } from "@/core/pipeline/bootstrap-service";
-import { seedHistoricalLedger } from "@/core/pipeline/history-seed";
+import { seedRealHistory } from "@/core/pipeline/real-history-backfill";
 import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ export async function POST(req: Request) {
       // empty body → plain ingest
     }
     const summary = await runIngest();
-    const seed = reseed ? await seedHistoricalLedger({ force: true }) : null;
+    const seed = reseed ? await seedRealHistory({ force: true }) : null;
     if (reseed) {
       // force reseed rebuilt the ledger from real history — reset sync marker
       await db.ingestState.upsert({

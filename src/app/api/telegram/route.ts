@@ -47,7 +47,8 @@ export async function POST(req: Request) {
     await db.posterLog.create({
       data: {
         kind: spec.kind, signalId: body.signalId ?? null,
-        title: spec.matchInfo, sent, transport,
+        title: spec.kind === "NEWS" ? (spec.headline ?? "News poster").slice(0, 180) : spec.matchInfo,
+        sent, transport,
       },
     });
 
@@ -74,10 +75,20 @@ async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
   if (body.signalId) {
     const s = await db.signal.findUnique({
       where: { id: body.signalId },
-      include: { match: { select: { homeName: true, awayName: true, league: true } } },
+      include: {
+        match: {
+          select: {
+            homeName: true, awayName: true, league: true, venue: true,
+            startTime: true, surface: true,
+          },
+        },
+      },
     });
     if (s) {
-      base.matchInfo = `${s.match.homeName} vs ${s.match.awayName} — ${s.match.league}`;
+      base.matchInfo = `${s.match.homeName} vs ${s.match.awayName}`;
+      base.homeName = s.match.homeName;
+      base.awayName = s.match.awayName;
+      base.competition = s.match.league;
       base.marketLabel = s.marketLabel;
       base.selection = s.selection;
       base.price = s.price;
@@ -86,6 +97,8 @@ async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
       base.stake = s.stake;
       base.netProfit = s.netProfit ?? undefined;
       base.hash = s.shaHash;
+      base.kickoffIso = s.match.startTime.toISOString();
+      base.venue = s.match.venue ?? (s.match.surface ? `${s.match.surface} Court` : undefined);
     }
   }
   return base;

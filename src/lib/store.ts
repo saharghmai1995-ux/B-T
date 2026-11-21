@@ -3,13 +3,13 @@
 /**
  * Client store — UI state only. Zero financial math happens here:
  * the store holds server-computed values and user selections.
+ * v2.0: the paywall tier is GONE — this web-app is VIP-only (owner + members).
  */
 
 import { create } from "zustand";
 
-export type ViewKey = "overview" | "signals" | "lab" | "ledger" | "telegram" | "billing";
+export type ViewKey = "overview" | "signals" | "lab" | "ledger" | "telegram" | "vault";
 export type SportFilter = "all" | "football" | "tennis";
-export type Tier = "FREE" | "PRO_VIP" | "ENTERPRISE";
 
 export interface BetslipItem {
   signalId: string;
@@ -30,14 +30,12 @@ export interface BetslipItem {
 interface AppState {
   view: ViewKey;
   sportFilter: SportFilter;
-  tier: Tier;
   betslipOpen: boolean;
   betslip: BetslipItem[];
   searchQuery: string;
   syncing: boolean;
   setView: (v: ViewKey) => void;
   setSportFilter: (f: SportFilter) => void;
-  setTier: (t: Tier) => void;
   setBetslipOpen: (open: boolean) => void;
   setSearchQuery: (q: string) => void;
   setSyncing: (s: boolean) => void;
@@ -50,14 +48,12 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   view: "overview",
   sportFilter: "all",
-  tier: "FREE",
   betslipOpen: false,
   betslip: [],
   searchQuery: "",
   syncing: false,
   setView: (v) => set({ view: v }),
   setSportFilter: (f) => set({ sportFilter: f }),
-  setTier: (t) => set({ tier: t }),
   setBetslipOpen: (open) => set({ betslipOpen: open }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setSyncing: (s) => set({ syncing: s }),

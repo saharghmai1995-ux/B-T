@@ -19,6 +19,8 @@ model Match {
   espnEventId String @unique
   homeName    String
   awayName    String
+  homeLogo    String? // official ESPN logo / flag URL (used on signal cards + posters)
+  awayLogo    String? // official ESPN logo / flag URL
   homeRank    Int? // tennis: player A ranking
   awayRank    Int? // tennis: player B ranking
   startTime   DateTime
@@ -113,10 +115,40 @@ model IngestState {
 }
 
 // Shadow ledger: supervisor vetoes that never touched the bank.
+// v2.0: every veto carries the REAL fixture context + the REAL final score so
+// the tracker can prove whether the veto actually saved the stake.
 model ShadowVeto {
-  id        String   @id @default(cuid())
-  signalRef String
-  reason    String
-  category  String
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  signalRef  String
+  reason     String
+  category   String
+  sport      String? // "football" | "tennis"
+  league     String?
+  marketLabel String? // official English market name at veto time
+  selection  String?
+  price      Float?
+  modelProb  Float?
+  ftScore    String? // REAL final score (e.g. "2-1") once the fixture finished
+  savedUnits Float? // positive => veto prevented a loss
+  verdict    String? // "SAVED_LOSS" | "MISSED_WIN" | "PENDING" | "UNKNOWN"
+  decidedAt  DateTime? // when the fixture finished and the verdict was computed
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Broadcast schedule manager for the Telegram studio (honest status only:
+// "sent" is stamped exclusively by an actual confirmed send action).
+model BroadcastSchedule {
+  id        String    @id @default(cuid())
+  slotTitle String // e.g. "رادار صبح"
+  time      String // "HH:mm" Tehran local time
+  channel   String    @default("PUBLIC") // "PUBLIC" | "VIP"
+  kind      String    @default("SIGNAL") // SIGNAL | EDUCATION | NEWS | REPORT | RADAR
+  enabled   Boolean   @default(true)
+  sentAt    DateTime? // stamped ONLY by a real confirmed send action
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([time])
 }

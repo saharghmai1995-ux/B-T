@@ -1,14 +1,17 @@
 /**
- * History Seed — Cold-Start Ledger Bootstrap (server-only, one-time).
+ * Real History Backfill — v2.0 ZERO-MOCK cold-start ledger bootstrap.
  *
- * The live pipeline only builds ledger history as matches finish in real
- * time, so a fresh install shows a dead dashboard (0 settled rows). This
- * module back-fills the ledger from REAL ESPN finished fixtures of the past
- * days: the real model factories issue the picks, the REAL settlement engine
- * resolves them against the REAL final scores. Zero fake results, zero fake
- * odds — the same honest accounting as the live loop (ingest-service).
+ * Replaces the removed sim/history-seed modules: a fresh install back-fills
+ * the ledger from REAL ESPN finished fixtures of the past 7 days only.
+ * - Fixtures: ESPN soccer scoreboard `?dates=YYYYMMDD` (post state) + ESPN
+ *   tennis ATP/WTA past range. No synthetic fixtures anywhere.
+ * - Odds: REAL ESPN closing pickcenter when available.
+ * - Picks: the same model factories the live pipeline uses.
+ * - Settlement: the REAL settlement engine against REAL final scores.
+ * - Vetoes: toxic-league fixtures become shadow-ledger rows carrying the
+ *   REAL FT score and the REAL verdict (saved-loss / missed-win).
  *
- * Idempotent: guarded by a Setting flag; never runs twice.
+ * Idempotent: guarded by a Setting flag; never runs twice (unless forced).
  */
 
 import { db } from "@/lib/db";
@@ -23,18 +26,17 @@ import { lockSignal } from "@/core/ledger/sha256-chain";
 import { tehranDayKey } from "./ingest-service";
 import { leagueAverageGoals, findTeamStat } from "./feed-gatherer";
 import { setSetting, getSetting } from "./settings";
-import { buildSimHistoryPack, SIM_FORCED } from "./sim-feed";
 
 export const HISTORY_SEEDED_KEY = "historySeededAt";
 
 const TOXIC_LEAGUES = new Set(["esp.2", "usa.1", "fifa.friendly"]);
-const FOOTBALL_PROBE_DAYS = [0, 1, 2, 3]; // all-league probes (day 0 = today's FT matches)
-const FOOTBALL_FILL_DAYS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]; // active-league fills
-const TENNIS_RANGE = [12, 1]; // from 12 days ago to yesterday
+const FOOTBALL_PAST_DAYS = [1, 2, 3, 4]; // all-league probes (yesterday .. -4)
+const FOOTBALL_FILL_DAYS = [5, 6, 7]; // active-league fills up to the full 7-day window
+const TENNIS_RANGE = [7, 1]; // from 7 days ago to yesterday
 const COVERAGE = 0.66; // share of finished fixtures the supervisor would have issued
 const ANCHOR_COVERAGE = 0.3; // occasional extra anchor pick (as in live acca anchors)
 const ACCA_EVERY = 6; // every N-th issued signal becomes a 2-leg acca instead
-const MAX_SUMMARY_FETCHES = 90; // closing-odds summary calls per seed run
+const MAX_SUMMARY_FETCHES = 90; // closing-odds summary calls per backfill run
 
 export interface HistorySeedSummary {
   skipped: boolean;
@@ -77,57 +79,40 @@ async function upsertHistoryMatch(m: FeedMatch): Promise<string> {
     create: {
       espnEventId: m.espnEventId, sport: m.sport, league: m.league, leagueCode: m.leagueCode,
       homeName: m.homeName, awayName: m.awayName, homeRank: m.homeRank ?? null,
-      awayRank: m.awayRank ?? null, startTime: m.startTime, status: m.status,
+      awayRank: m.awayRank ?? null, homeLogo: m.homeLogo ?? null, awayLogo: m.awayLogo ?? null,
+      startTime: m.startTime, status: m.status,
       homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
       detail: m.detail ?? null, surface: m.surface ?? null, round: m.round ?? null,
-      venue: m.venue ?? null,
-      source: m.espnEventId.startsWith("sim-") ? "SIM" : "ESPN",
+      venue: m.venue ?? null, source: "ESPN",
     },
     update: {
       status: m.status, homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
-      detail: m.detail ?? null,
+      detail: m.detail ?? null, homeLogo: m.homeLogo ?? undefined, awayLogo: m.awayLogo ?? undefined,
     },
   });
   return row.id;
 }
 
-async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[]; standings?: Record<string, TeamStat[]> }> {
+/** REAL history pack only — a total network outage leaves an empty pack. */
+async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[] }> {
   const notes: string[] = [];
-
-  // Offline guarantee: BET_SIM_FORCE=1 skips the network entirely and returns
-  // the deterministic SIM history (with ready-made standings for the engines).
-  if (SIM_FORCED) {
-    const sim = buildSimHistoryPack();
-    return { football: sim.football, tennis: sim.tennis, standings: sim.standings,
-      notes: ["SIM history forced via BET_SIM_FORCE=1 — deterministic simulated fixtures"] };
-  }
 
   // Probe recent past days across ALL leagues, then fill older days for active ones only.
   const probe: FeedMatch[] = [];
-  for (const d of FOOTBALL_PROBE_DAYS) {
-    probe.push(...await fetchFootballPastDay(pastDayKey(d), allLeagues()));
+  for (const d of FOOTBALL_PAST_DAYS) {
+    probe.push(...await fetchFootballPastDay(pastDayKey(d), [...FOOTBALL_LEAGUES]));
   }
   const activeLeagues = [...new Set(probe.map((m) => m.leagueCode))];
   const fill: FeedMatch[] = [];
   for (const d of FOOTBALL_FILL_DAYS) {
-    fill.push(...await fetchFootballPastDay(pastDayKey(d), activeLeagues.length ? activeLeagues : allLeagues()));
+    fill.push(...await fetchFootballPastDay(pastDayKey(d), activeLeagues.length ? activeLeagues : [...FOOTBALL_LEAGUES]));
   }
   const football = [...probe, ...fill];
-  if (activeLeagues.length === 0) notes.push("No finished football fixtures found in history window");
+  if (activeLeagues.length === 0) notes.push("No finished football fixtures found in the 7-day window");
   const tennis = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
-  if (tennis.length === 0) notes.push("No finished tennis fixtures found in history window");
+  if (tennis.length === 0) notes.push("No finished tennis fixtures found in the 7-day window");
 
-  // Total history outage → SIM history so a fresh install NEVER stays dead.
-  if (football.length === 0 && tennis.length === 0) {
-    const sim = buildSimHistoryPack();
-    notes.push("ESPN history fully unreachable — deterministic SIM history engaged (source=SIM)");
-    return { football: sim.football, tennis: sim.tennis, standings: sim.standings, notes };
-  }
   return { football, tennis, notes };
-}
-
-function allLeagues(): string[] {
-  return [...FOOTBALL_LEAGUES];
 }
 
 interface PendingLeg {
@@ -172,16 +157,26 @@ async function buildCandidates(
   pack: { football: FeedMatch[]; tennis: FeedMatch[] },
   standings: Record<string, TeamStat[]>,
   leagueAvg: (rows: TeamStat[] | undefined) => number,
-): Promise<{ singles: PendingLeg[]; vetoes: Array<{ ref: string; reason: string; category: string }> }> {
+): Promise<{
+  singles: PendingLeg[];
+  vetoes: Array<{
+    ref: string; reason: string; category: string; sport: string; league: string;
+    ftScore: string; startTime: Date;
+    wouldHaveBeen: { marketKey: string; selection: string; price: number; modelProb: number; fixture: { sport: string; homeScore: number; awayScore: number; retired: boolean; detail?: string | null } } | null;
+  }>;
+}> {
   const singles: PendingLeg[] = [];
-  const vetoes: Array<{ ref: string; reason: string; category: string }> = [];
+  const vetoes: Array<{
+    ref: string; reason: string; category: string; sport: string; league: string;
+    ftScore: string; startTime: Date;
+    wouldHaveBeen: { marketKey: string; selection: string; price: number; modelProb: number; fixture: { sport: string; homeScore: number; awayScore: number; retired: boolean; detail?: string | null } } | null;
+  }> = [];
   const all = [...pack.football, ...pack.tennis].sort(
     (a, b) => a.startTime.getTime() - b.startTime.getTime(),
   );
   // Pre-fetch REAL closing odds (ESPN pickcenter) for tradable football fixtures.
-  // (skipped in SIM-forced mode: the sim pack already carries reference odds)
   const oddsByEvent = new Map<string, Awaited<ReturnType<typeof fetchFootballSummaryOdds>>>();
-  const needOdds = SIM_FORCED ? [] : pack.football
+  const needOdds = pack.football
     .filter((m) => m.status === "post" && !TOXIC_LEAGUES.has(m.leagueCode))
     .slice(0, MAX_SUMMARY_FETCHES);
   const CHUNK = 6;
@@ -195,12 +190,37 @@ async function buildCandidates(
   for (const m of all.slice(0, 240)) {
     if (m.status !== "post" || m.homeScore == null || m.awayScore == null) continue;
     const id = await upsertHistoryMatch(m);
-    // Toxic football leagues → honest supervisor veto (never touched the bank).
+    const ftScore = `${m.homeScore}-${m.awayScore}`;
+    const fixture = {
+      sport: m.sport, homeScore: m.homeScore, awayScore: m.awayScore,
+      retired: m.retired === true, detail: m.detail ?? null,
+    };
+    // Toxic football leagues → honest supervisor veto. The "would-have-been"
+    // pick is computed with the SAME model machinery and resolved against the
+    // REAL final score, so the tracker can PROVE whether the veto saved the
+    // stake or cost a missed win.
     if (m.sport === "football" && TOXIC_LEAGUES.has(m.leagueCode)) {
+      const ctx = {
+        id, sport: m.sport as "football", league: m.league, leagueCode: m.leagueCode,
+        homeName: m.homeName, awayName: m.awayName, homeRank: null, awayRank: null,
+        startTime: m.startTime, status: m.status, surface: null, venue: m.venue ?? null, round: m.round ?? null,
+      };
+      const f = buildFootballFactory(
+        ctx,
+        findTeamStat(standings, m.leagueCode, m.homeName),
+        findTeamStat(standings, m.leagueCode, m.awayName),
+        null,
+        leagueAvg(standings[m.leagueCode]),
+      );
+      const soft = bestSoftPick(f.quotes);
       vetoes.push({
         ref: `${m.homeName} vs ${m.awayName}`,
         reason: `Supervisor blacklist: league ${m.leagueCode} excluded pre-match (data-integrity risk)`,
         category: "league",
+        sport: m.sport, league: m.league, ftScore, startTime: m.startTime,
+        wouldHaveBeen: soft
+          ? { marketKey: soft.marketKey, selection: soft.selection, price: soft.price, modelProb: soft.modelProb, fixture }
+          : null,
       });
       continue;
     }
@@ -240,10 +260,7 @@ async function buildCandidates(
         marketLabel: ("marketLabel" in cand ? String(cand.marketLabel) : cand.marketKey),
         selection: cand.selection, modelProb: cand.modelProb, trueProb: cand.trueProb,
         price: cand.price, evPct, startTime: m.startTime,
-        fixture: {
-          sport: m.sport, homeScore: m.homeScore, awayScore: m.awayScore,
-          retired: m.retired === true, detail: m.detail ?? null,
-        },
+        fixture,
       });
     };
     push(c);
@@ -255,8 +272,8 @@ async function buildCandidates(
   return { singles, vetoes };
 }
 
-/** The one-time backfill entrypoint. */
-export async function seedHistoricalLedger(opts?: { force?: boolean }): Promise<HistorySeedSummary> {
+/** The one-time REAL backfill entrypoint. */
+export async function seedRealHistory(opts?: { force?: boolean }): Promise<HistorySeedSummary> {
   const existing = await getSetting(HISTORY_SEEDED_KEY);
   const settledAlready = await db.signal.count({ where: { status: { not: "OPEN" } } });
   if (!opts?.force && (existing || settledAlready >= 6)) {
@@ -267,7 +284,7 @@ export async function seedHistoricalLedger(opts?: { force?: boolean }): Promise<
     };
   }
   if (opts?.force) {
-    // Rebuild from scratch: wipe the seeded ledger artifacts (open live signals stay).
+    // Rebuild from scratch: wipe the backfilled ledger artifacts (open live signals stay).
     await db.signal.deleteMany({ where: { status: { not: "OPEN" } } });
     await db.shadowVeto.deleteMany({});
     await db.posterLog.deleteMany({});
@@ -278,9 +295,8 @@ export async function seedHistoricalLedger(opts?: { force?: boolean }): Promise<
   // Standings for EVERY football league present in history (real season tables).
   // No cap: a missing table silently degrades model-vs-market divergence to zero
   // and the fixture can never produce an honest signal.
-  // SIM history ships its own deterministic standings — only network leagues fetch.
   const leagues = [...new Set(pack.football.map((m) => m.leagueCode))];
-  const standings: Record<string, TeamStat[]> = { ...(pack.standings ?? {}) };
+  const standings: Record<string, TeamStat[]> = {};
   const missing = leagues.filter((lg) => !standings[lg]);
   const SCHUNK = 5;
   for (let i = 0; i < missing.length; i += SCHUNK) {
@@ -374,12 +390,48 @@ export async function seedHistoricalLedger(opts?: { force?: boolean }): Promise<
     else void_++;
   }
 
-  // Shadow-ledger vetoes (honest: supervisor groups that never touched the bank).
+  // Shadow-ledger vetoes — each veto resolves its "would-have-been" pick
+  // against the REAL final score: LOST → the veto saved the stake;
+  // WON → the veto cost a missed win (honest negative saving).
   let vetoCount = 0;
+  let savedTotal = 0;
   for (const v of vetoes.slice(0, 14)) {
-    await db.shadowVeto.create({ data: { signalRef: v.ref, reason: v.reason, category: v.category } });
+    let verdict = "UNKNOWN";
+    let savedUnits: number | null = null;
+    let ftScore: string | null = null;
+    let decidedAt: Date | null = null;
+    if (v.wouldHaveBeen) {
+      const pick = v.wouldHaveBeen;
+      const verdict_ = resolveSelection(pick.marketKey, pick.selection, pick.fixture);
+      ftScore = `${pick.fixture.homeScore}-${pick.fixture.awayScore}`;
+      decidedAt = settleTime(v.startTime);
+      if (verdict_.status === "LOST") {
+        verdict = "SAVED_LOSS";
+        savedUnits = 100; // flat stake spared by the veto
+        savedTotal = round2(savedTotal + 100);
+      } else if (verdict_.status === "WON") {
+        verdict = "MISSED_WIN";
+        savedUnits = round2(-100 * (pick.price - 1)); // honest opportunity cost
+        savedTotal = round2(savedTotal + savedUnits);
+      } else {
+        verdict = "PENDING";
+        savedUnits = 0;
+      }
+    }
+    await db.shadowVeto.create({
+      data: {
+        signalRef: v.ref, reason: v.reason, category: v.category,
+        sport: v.sport, league: v.league,
+        marketLabel: v.wouldHaveBeen ? v.wouldHaveBeen.marketKey : null,
+        selection: v.wouldHaveBeen ? v.wouldHaveBeen.selection : null,
+        price: v.wouldHaveBeen ? v.wouldHaveBeen.price : null,
+        modelProb: v.wouldHaveBeen ? v.wouldHaveBeen.modelProb : null,
+        ftScore, savedUnits, verdict, decidedAt,
+      },
+    });
     vetoCount++;
   }
+  void savedTotal;
 
   // Poster queue for Telegram Studio — recent signals + recent results.
   let posters = 0;

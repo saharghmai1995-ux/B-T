@@ -5,7 +5,7 @@
 
 import type { CandidateSignal, MatchContext } from "@/core/types";
 import { marginPrice, BOOK_MARGIN } from "@/core/math/devig";
-import { isEliteTennisTournament } from "@/core/bookmakers/market-whitelist";
+import { isEliteTennisTournament, getMarket } from "@/core/bookmakers/market-whitelist";
 import { runMarkovCopula } from "./markov-copula";
 
 export interface TennisQuote {
@@ -75,7 +75,8 @@ export function pickSingleEvTennis(match: MatchContext, quotes: TennisQuote[]): 
   }
   if (!best) return null;
   return {
-    match, line: "SINGLE_EV", marketKey: best.marketKey, marketLabel: best.marketKey,
+    match, line: "SINGLE_EV", marketKey: best.marketKey,
+    marketLabel: getMarket(best.marketKey)?.label ?? best.marketKey,
     selection: best.selection, modelProb: best.modelProb, trueProb: best.trueProb,
     price: best.price, evPct: Math.round(bestEv * 1000) / 10,
     stake: 100, stakeMode: "FLAT_100",

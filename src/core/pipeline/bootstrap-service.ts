@@ -1,14 +1,15 @@
 /**
  * Bootstrap Service — the single load route's brain.
- * Cold-Start Auto-Ingest: if the DB is empty, ingest runs synchronously so the
- * response NEVER comes back with zero matches. All views read from here.
+ * Cold-Start Auto-Ingest: if the DB is empty, ingest runs synchronously.
+ * v2.0: REAL-only backfill (past 7 days from ESPN), lock timestamps on every
+ * card, richer shadow-vetoes and LIVE/OFFLINE health (no SIM mode exists).
  */
 
 import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
-import { seedHistoricalLedger, type HistorySeedSummary } from "./history-seed";
+import { seedRealHistory, type HistorySeedSummary } from "./real-history-backfill";
 import { getSettings, maskSettings, SETTING_KEYS } from "./settings";
 import { shinDevig } from "@/core/math/devig";
 
@@ -17,9 +18,9 @@ export interface AppState {
   matches: AppMatch[];
   openSignals: AppSignal[];
   settledSignals: AppSignal[];
-  shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
+  shadowVetoes: AppVeto[];
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; mode: "LIVE" | "SIM"; historySeed: string | null };
+  health: { espn: boolean; oddsApi: boolean; oddsApiIo: boolean; lastIngest: string | null; degraded: boolean; mode: "LIVE" | "OFFLINE"; historySeed: string | null };
   ingestSummary: IngestSummary | null;
   historySeed: HistorySeedSummary | null;
   generatedAt: string;
@@ -36,6 +37,7 @@ export interface AppSignal {
   marketLabel: string;
   selection: string;
   modelProb: number;
+  trueProb: number;
   price: number;
   evPct: number;
   stake: number;
@@ -45,13 +47,42 @@ export interface AppSignal {
   shaHash: string;
   dayKey: string;
   startTime: string;
+  lockedAt: string; // REAL pre-match lock timestamp (Signal.createdAt)
   legs?: Array<{ label: string; price: number; prob: number }> | null;
   espnUrl: string;
   settledAt: string | null;
+  homeName: string;
+  awayName: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
+  venue: string | null;
+  surface: string | null;
+  homeScore: number | null;
+  awayScore: number | null;
+}
+
+export interface AppVeto {
+  id: string;
+  signalRef: string;
+  reason: string;
+  category: string;
+  sport: string | null;
+  league: string | null;
+  marketLabel: string | null;
+  selection: string | null;
+  price: number | null;
+  modelProb: number | null;
+  ftScore: string | null;
+  savedUnits: number | null;
+  verdict: string | null;
+  decidedAt: string | null;
+  createdAt: string;
 }
 
 export interface AppMatch extends MatchContext {
   espnEventId: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
   scores: { home: number | null; away: number | null };
   quotes: Array<{ marketKey: string; selection: string; price: number; trueProb: number; source: string }>;
 }
@@ -74,19 +105,32 @@ async function toAppSignals(rows: Awaited<ReturnType<typeof fetchSignals>>): Pro
     matchInfo: `${s.match.homeName} vs ${s.match.awayName}`,
     league: s.match.league, sport: s.sport, line: s.line,
     marketKey: s.marketKey, marketLabel: s.marketLabel, selection: s.selection,
-    modelProb: s.modelProb, price: s.price, evPct: s.evPct,
+    modelProb: s.modelProb, trueProb: s.trueProb, price: s.price, evPct: s.evPct,
     stake: s.stake, stakeMode: s.stakeMode, status: s.status,
     netProfit: s.netProfit, shaHash: s.shaHash, dayKey: s.dayKey,
     startTime: s.match.startTime.toISOString(),
+    lockedAt: s.createdAt.toISOString(),
     legs: s.legs ? JSON.parse(s.legs) : null,
     espnUrl: espnUrlFor(s.sport, s.match.leagueCode, s.match.espnEventId),
     settledAt: s.settledAt?.toISOString() ?? null,
+    homeName: s.match.homeName, awayName: s.match.awayName,
+    homeLogo: s.match.homeLogo, awayLogo: s.match.awayLogo,
+    venue: s.match.venue, surface: s.match.surface,
+    homeScore: s.match.homeScore, awayScore: s.match.awayScore,
   }));
 }
 
 function fetchSignals() {
   return db.signal.findMany({
-    include: { match: { select: { homeName: true, awayName: true, league: true, leagueCode: true, startTime: true, espnEventId: true } } },
+    include: {
+      match: {
+        select: {
+          homeName: true, awayName: true, league: true, leagueCode: true, startTime: true,
+          espnEventId: true, homeLogo: true, awayLogo: true, venue: true, surface: true,
+          homeScore: true, awayScore: true,
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
     take: 400,
   });
@@ -100,7 +144,7 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
       include: { odds: { where: { bookmaker: { in: ["1XBET_EST", "1XBET_LIVE"] } } } },
     }),
     fetchSignals(),
-    db.shadowVeto.findMany({ orderBy: { createdAt: "desc" }, take: 20 }),
+    db.shadowVeto.findMany({ orderBy: { createdAt: "desc" }, take: 60 }),
     getSettings(),
     db.ingestState.findUnique({ where: { id: "singleton" } }),
   ]);
@@ -115,13 +159,19 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
       matchInfo: `${s.match.homeName} vs ${s.match.awayName}`,
     }));
   const openRows = signals.filter((s) => s.status === "OPEN").map((s) => ({ stake: s.stake }));
-  const metrics = computeMasterMetrics(settledRows, openRows);
+
+  // REAL shadow-ledger saving: signed sum of the veto verdicts (a saved loss
+  // adds +100u, a missed win subtracts its honest opportunity cost).
+  const savedCapital = vetoes.reduce((acc, v) => acc + (v.savedUnits ?? 0), 0);
+  const savedCount = vetoes.filter((v) => v.verdict === "SAVED_LOSS").length;
+  const metrics = computeMasterMetrics(settledRows, openRows, { savedCapital, savedCount });
 
   const matches: AppMatch[] = matchRows.map((m) => ({
     id: m.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
     league: m.league, leagueCode: m.leagueCode, homeName: m.homeName, awayName: m.awayName,
     homeRank: m.homeRank, awayRank: m.awayRank, startTime: m.startTime,
     status: m.status, surface: m.surface, venue: m.venue, round: m.round,
+    homeLogo: m.homeLogo, awayLogo: m.awayLogo,
     scores: { home: m.homeScore, away: m.awayScore },
     quotes: m.odds.map((q) => ({
       marketKey: q.marketKey, selection: q.selection, price: q.price,
@@ -135,8 +185,8 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     toAppSignals(open), toAppSignals(settled),
   ]);
 
-  // Feed mode honesty: the LAST ingest run decides whether the current board
-  // is live ESPN data or the deterministic SIM fallback.
+  // Feed mode honesty: the LAST ingest run decides whether the board reflects
+  // live ESPN data or a temporarily unreachable feed (OFFLINE — never SIM).
   let lastDegraded: boolean | undefined;
   if (ingest?.lastSummary) {
     try { lastDegraded = (JSON.parse(ingest.lastSummary) as { degraded?: boolean }).degraded; } catch { /* ignore */ }
@@ -149,15 +199,20 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     openSignals,
     settledSignals,
     shadowVetoes: vetoes.map((v) => ({
-      id: v.id, signalRef: v.signalRef, reason: v.reason, createdAt: v.createdAt.toISOString(),
+      id: v.id, signalRef: v.signalRef, reason: v.reason, category: v.category,
+      sport: v.sport, league: v.league, marketLabel: v.marketLabel, selection: v.selection,
+      price: v.price, modelProb: v.modelProb, ftScore: v.ftScore,
+      savedUnits: v.savedUnits, verdict: v.verdict,
+      decidedAt: v.decidedAt?.toISOString() ?? null, createdAt: v.createdAt.toISOString(),
     })),
     settings: maskSettings(settings),
     health: {
       espn: matches.length > 0,
       oddsApi: !!settings[SETTING_KEYS.oddsApiKey],
+      oddsApiIo: !!settings[SETTING_KEYS.oddsApiIoKey],
       lastIngest: ingest?.lastRun.toISOString() ?? null,
       degraded,
-      mode: degraded ? "SIM" : "LIVE",
+      mode: degraded ? "OFFLINE" : "LIVE",
       historySeed: settings["historySeededAt"] ?? null,
     },
     ingestSummary: opts?.ingestSummary ?? null,
@@ -175,21 +230,21 @@ export async function ensureBootstrapState(): Promise<AppState> {
   if (action === "AUTO_INGEST") {
     summary = await runIngest();
   }
-  // Cold-start ledger backfill: real history seed when no settled rows exist.
+  // Cold-start ledger backfill: REAL 7-day history when no settled rows exist.
   const settledCount = await db.signal.count({ where: { status: { not: "OPEN" } } });
   let seedSummary: HistorySeedSummary | null = null;
   if (settledCount === 0) {
-    seedSummary = await seedHistoricalLedger();
+    seedSummary = await seedRealHistory();
     if (seedSummary.signalsSeeded > 0) {
       summary = summary ?? {
         matchesUpserted: 0, quotesUpserted: 0, signalsCreated: 0, settledCount: 0,
-        accasCreated: 0, degraded: false, notes: ["Cold-start history seed applied"],
+        accasCreated: 0, degraded: false, notes: ["Cold-start REAL history backfill applied"],
         ranAt: new Date().toISOString(),
       };
     }
   }
   const state = await bootstrapState({ ingestSummary: summary, historySeed: seedSummary });
-  // Absolute guard: even in a total network outage, never return zero matches.
+  // Absolute guard: retry the live feed once when the board came back empty.
   if (state.matches.length === 0) {
     const again = await runIngest();
     if (again.matchesUpserted > 0) return bootstrapState({ ingestSummary: again, historySeed: seedSummary });

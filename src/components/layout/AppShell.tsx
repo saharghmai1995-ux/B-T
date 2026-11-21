@@ -1,12 +1,13 @@
 "use client";
 
 /**
- * AppShell — the commercial web-app shell.
- * Desktop: collapsible RTL sidebar + sticky top command bar.
- * Mobile (<768px): glass bottom tab bar (PWA-like) with safe-area support.
+ * AppShell — the v2.0 VIP web-app shell.
+ * Desktop: collapsible RTL sidebar + sticky top command bar with a REAL live
+ * clock. Mobile (<768px): glass bottom tab bar (PWA-like) with safe-area.
+ * The paywall tier is gone: exclusive for the owner + verified VIP members.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppStore, type ViewKey } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -16,18 +17,18 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { fmtUnits } from "@/lib/api-types";
+import { fmtUnits, fmtClock } from "@/lib/api-types";
 import type { AppStatePayload } from "@/lib/api-types";
 import OverviewView from "@/components/views/OverviewView";
 import SignalsHubView from "@/components/views/SignalsHubView";
 import QuantLabView from "@/components/views/QuantLabView";
 import VerifiedLedgerView from "@/components/views/VerifiedLedgerView";
 import TelegramStudioView from "@/components/views/TelegramStudioView";
-import BillingApiView from "@/components/views/BillingApiView";
+import SystemVaultView from "@/components/views/SystemVaultView";
 import BetSlipDrawer from "@/components/layout/BetSlipDrawer";
 import {
-  LayoutDashboard, Crosshair, FlaskConical, ShieldCheck, Radio, Gem,
-  ReceiptText, Search, RefreshCw, Menu,
+  LayoutDashboard, Crosshair, FlaskConical, ShieldCheck, Radio, Settings2,
+  ReceiptText, Search, RefreshCw, Menu, Clock,
 } from "lucide-react";
 
 const NAV: Array<{ key: ViewKey; label: string; short: string; icon: React.ElementType }> = [
@@ -36,7 +37,7 @@ const NAV: Array<{ key: ViewKey; label: string; short: string; icon: React.Eleme
   { key: "ledger", label: "کارنامه رسمی", short: "کارنامه", icon: ShieldCheck },
   { key: "lab", label: "آزمایشگاه کوانت", short: "آزمایشگاه", icon: FlaskConical },
   { key: "telegram", label: "استودیو تلگرام", short: "استودیو", icon: Radio },
-  { key: "billing", label: "اشتراک، پرداخت و API", short: "حساب", icon: Gem },
+  { key: "vault", label: "⚙️ تنظیمات سیستم و کلیدهای API", short: "تنظیمات", icon: Settings2 },
 ];
 
 const SPORTS: Array<{ key: "all" | "football" | "tennis"; label: string }> = [
@@ -45,11 +46,21 @@ const SPORTS: Array<{ key: "all" | "football" | "tennis"; label: string }> = [
   { key: "tennis", label: "🎾 تنیس" },
 ];
 
-const TIER_LABEL: Record<string, string> = {
-  FREE: "Free User",
-  PRO_VIP: "Pro VIP",
-  ENTERPRISE: "Enterprise",
-};
+/** Real live system clock — fixes the frozen 00:00:00 footer bug. */
+function LiveClock({ className }: { className?: string }) {
+  const [now, setNow] = useState<Date | null>(null);
+  useEffect(() => {
+    setNow(new Date());
+    const t = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  return (
+    <span className={cn("num inline-flex items-center gap-1.5", className)} suppressHydrationWarning>
+      <Clock className="size-3 text-cyan-400" />
+      {now ? fmtClock(now) : "--:--:--"}
+    </span>
+  );
+}
 
 export function useAppState() {
   return useQuery<AppStatePayload>({
@@ -66,9 +77,22 @@ export function useAppState() {
 }
 
 export default function AppShell() {
-  const { view, sportFilter, tier, betslip, setView, setSportFilter, setTier, setBetslipOpen, searchQuery, setSearchQuery, syncing, setSyncing } = useAppStore();
+  const { view, sportFilter, betslip, setView, setSportFilter, setBetslipOpen, searchQuery, setSearchQuery, syncing, setSyncing } = useAppStore();
   const qc = useQueryClient();
   const { data: state, isLoading, isError, error } = useAppState();
+  const [online, setOnline] = useState(true);
+
+  useEffect(() => {
+    setOnline(navigator.onLine);
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", down);
+    };
+  }, []);
 
   useEffect(() => {
     if (isError) toast.error("بارگذاری ناموفق — دوباره تلاش کنید", { description: (error as Error)?.message });
@@ -107,15 +131,15 @@ export default function AppShell() {
             className={cn(
               "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-all",
               active
-                ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/30"
-                : "text-slate-300 hover:bg-secondary hover:text-foreground border border-transparent",
+                ? "border border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                : "border border-transparent text-slate-300 hover:bg-secondary hover:text-foreground",
             )}
             aria-current={active ? "page" : undefined}
           >
             <Icon className="size-4 shrink-0" />
             <span className="flex-1 text-right font-medium">{n.label}</span>
             {n.key === "signals" && openCount > 0 && (
-              <Badge className="bg-emerald-500 text-emerald-950 hover:bg-emerald-400 num px-1.5 text-[10px]">
+              <Badge className="num bg-emerald-500 text-emerald-950 hover:bg-emerald-400 px-1.5 text-[10px]">
                 {openCount}
               </Badge>
             )}
@@ -133,7 +157,7 @@ export default function AppShell() {
           onClick={() => setSportFilter(s.key)}
           className={cn(
             "rounded-lg px-2.5 py-1.5 text-xs transition-colors",
-            sportFilter === s.key ? "bg-emerald-500/15 text-emerald-300" : "text-muted-foreground hover:text-foreground",
+            sportFilter === s.key ? "bg-cyan-500/15 text-cyan-300" : "text-muted-foreground hover:text-foreground",
           )}
         >
           {s.label}
@@ -141,6 +165,8 @@ export default function AppShell() {
       ))}
     </div>
   );
+
+  const feedLive = state?.health.mode !== "OFFLINE" && (state?.health.espn ?? false);
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -165,9 +191,9 @@ export default function AppShell() {
             </Sheet>
 
             <button onClick={() => setView("overview")} className="flex items-center gap-2" aria-label="خانه">
-              <span className="grid size-8 place-items-center rounded-xl bg-emerald-500/15 text-lg">⚡</span>
+              <span className="grid size-8 place-items-center rounded-xl bg-cyan-500/15 text-lg drop-shadow-[0_0_10px_rgba(0,229,255,0.5)]">⚡</span>
               <span className="hidden text-sm font-extrabold tracking-tight sm:block">
-                NeoBet <span className="text-emerald-400">Quant Pro</span>
+                NeoBet <span className="neon-cyan">Quant Pro</span>
               </span>
             </button>
 
@@ -184,36 +210,30 @@ export default function AppShell() {
 
             <div className="flex-1 md:hidden" />
 
-            {/* Feed health — honest LIVE vs SIM labeling */}
-            {state?.health.mode === "SIM" ? (
+            {/* Feed health — honest LIVE vs OFFLINE (zero-mock: no SIM mode) */}
+            {!online || state?.health.mode === "OFFLINE" ? (
               <div
-                className="hidden items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 lg:flex"
-                title="فید ESPN در دسترس نیست — داده‌ها از فید شبیه‌سازی قطعی (SIM) تأمین می‌شوند"
+                className="hidden items-center gap-1.5 rounded-xl border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 lg:flex"
+                title="اتصال به فید زنده ESPN برقرار نیست — داده‌ای نمایش داده نمی‌شود"
               >
-                <span className="pulse-dot size-2 rounded-full bg-amber-400 text-amber-400" />
-                <span className="text-[11px] text-amber-300">حالت شبیه‌سازی (SIM)</span>
+                <span className="size-2 rounded-full bg-red-500 text-red-500" />
+                <span className="text-[11px] text-red-300">فید آفلاین — Zero-Mock</span>
               </div>
             ) : (
               <div className="hidden items-center gap-1.5 rounded-xl border border-slate-800 bg-secondary/50 px-2.5 py-1.5 lg:flex">
-                <span className={cn("size-2 rounded-full", state?.health.espn ? "pulse-dot bg-emerald-400 text-emerald-400" : "bg-red-500 text-red-500")} />
-                <span className="text-[11px] text-muted-foreground">1xBet / ESPN Live</span>
+                <span className={cn("size-2 rounded-full", feedLive ? "pulse-dot bg-emerald-400 text-emerald-400" : "bg-red-500 text-red-500")} />
+                <span className="text-[11px] text-muted-foreground">ESPN / 1xBet LIVE</span>
               </div>
             )}
 
-            {/* Tier switch (demo paywall) */}
-            <div className="hidden items-center rounded-xl border border-slate-800 bg-secondary/50 p-0.5 sm:flex">
-              {(["FREE", "PRO_VIP", "ENTERPRISE"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTier(t)}
-                  className={cn(
-                    "rounded-lg px-2 py-1 text-[11px] transition-colors",
-                    tier === t ? (t === "FREE" ? "bg-slate-700 text-slate-200" : t === "PRO_VIP" ? "vip-gold font-bold" : "bg-violet-500/25 text-violet-200") : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {TIER_LABEL[t]}
-                </button>
-              ))}
+            {/* VIP-only badge (paywall removed) */}
+            <div className="hidden items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 sm:flex" title="وب‌اپ اختصاصی مدیر و اعضای VIP">
+              <span className="text-[11px] font-bold text-amber-300">👑 VIP ONLY</span>
+            </div>
+
+            {/* Real live clock */}
+            <div className="hidden items-center rounded-xl border border-slate-800 bg-secondary/50 px-2.5 py-1.5 md:flex">
+              <LiveClock className="text-xs text-slate-300" />
             </div>
 
             <Button
@@ -249,11 +269,14 @@ export default function AppShell() {
             <div className="mt-auto border-t border-slate-800/70 p-3">
               <div className="glass p-3">
                 <div className="text-[10px] text-muted-foreground">موجودی بانک واحدی</div>
-                <div className="num mt-1 text-xl font-bold text-emerald-300">
+                <div className="num neon-emerald mt-1 text-xl font-bold">
                   {state ? fmtUnits(state.metrics.bankroll, 0) : "—"} u
                 </div>
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   {state ? `${state.metrics.wins} برد / ${state.metrics.losses} باخت` : "در حال بارگذاری…"}
+                </div>
+                <div className="mt-2 border-t border-slate-800/70 pt-2">
+                  <LiveClock className="text-[11px] text-muted-foreground" />
                 </div>
               </div>
             </div>
@@ -274,22 +297,22 @@ export default function AppShell() {
                 {view === "lab" && <QuantLabView state={state} />}
                 {view === "ledger" && <VerifiedLedgerView state={state} />}
                 {view === "telegram" && <TelegramStudioView state={state} />}
-                {view === "billing" && <BillingApiView state={state} />}
+                {view === "vault" && <SystemVaultView state={state} />}
               </>
             ) : null}
 
             {/* Sticky footer — pushed naturally by content, sticks on short pages */}
-            <footer className="mt-auto pt-6 pb-2">
+            <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
-                <span>
-                  NeoBet Quant Pro · هسته مالی SHA-256 · ضرایب واقعی 1xBet و BetForward
-                  {state?.health.mode === "SIM" && (
-                    <span className="mr-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">فید: SIM</span>
-                  )}
+                <span className="flex items-center gap-2">
+                  NeoBet Quant Pro v2.0 · هسته مالی SHA-256 · ضرایب واقعی 1xBet و BetForward · Zero-Mock
                 </span>
-                <span className="num">
-                  آخرین همگام‌سازی: {state?.health.lastIngest ? new Date(state.health.lastIngest).toLocaleTimeString("fa-IR") : "—"}
-                  {todaySignals > 0 && ` · سیگنال امروز: ${todaySignals}`}
+                <span className="flex items-center gap-3">
+                  <LiveClock className="text-cyan-300" />
+                  <span className="num">
+                    آخرین همگام‌سازی: {state?.health.lastIngest ? new Date(state.health.lastIngest).toLocaleTimeString("fa-IR") : "—"}
+                    {todaySignals > 0 && ` · سیگنال امروز: ${todaySignals}`}
+                  </span>
                 </span>
               </div>
             </footer>
@@ -312,7 +335,7 @@ export default function AppShell() {
                   onClick={() => setView(n.key)}
                   className={cn(
                     "flex min-h-[52px] flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] transition-colors",
-                    active ? "text-emerald-300" : "text-slate-400",
+                    active ? "text-cyan-300" : "text-slate-400",
                   )}
                 >
                   <Icon className="size-5" />

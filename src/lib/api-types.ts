@@ -22,8 +22,14 @@ export interface MasterMetrics {
     bySport: Record<string, number>;
     byLeague: Record<string, number>;
   };
-  equityCurve: Array<{ date: string; bankroll: number }>;
+  sportStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  marketStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  leagueStats: Record<string, { wins: number; losses: number; profit: number; winRate: number; settled: number }>;
+  dailyPnl: Array<{ date: string; football: number; tennis: number }>;
+  equityCurve: Array<{ date: string; bankroll: number; football: number; tennis: number }>;
   bankrollToday: number;
+  savedCapital: number;
+  savedCount: number;
 }
 
 export interface AppSignal {
@@ -37,6 +43,7 @@ export interface AppSignal {
   marketLabel: string;
   selection: string;
   modelProb: number;
+  trueProb: number;
   price: number;
   evPct: number;
   stake: number;
@@ -46,9 +53,18 @@ export interface AppSignal {
   shaHash: string;
   dayKey: string;
   startTime: string;
+  lockedAt: string; // REAL pre-match lock timestamp
   legs?: Array<{ label: string; price: number; prob: number }> | null;
   espnUrl: string;
   settledAt: string | null;
+  homeName: string;
+  awayName: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
+  venue: string | null;
+  surface: string | null;
+  homeScore: number | null;
+  awayScore: number | null;
 }
 
 export interface AppMatch {
@@ -59,6 +75,8 @@ export interface AppMatch {
   leagueCode: string;
   homeName: string;
   awayName: string;
+  homeLogo: string | null;
+  awayLogo: string | null;
   homeRank?: number | null;
   awayRank?: number | null;
   startTime: string;
@@ -70,14 +88,32 @@ export interface AppMatch {
   quotes: Array<{ marketKey: string; selection: string; price: number; trueProb: number; source: string }>;
 }
 
+export interface AppVeto {
+  id: string;
+  signalRef: string;
+  reason: string;
+  category: string;
+  sport: string | null;
+  league: string | null;
+  marketLabel: string | null;
+  selection: string | null;
+  price: number | null;
+  modelProb: number | null;
+  ftScore: string | null;
+  savedUnits: number | null;
+  verdict: string | null; // SAVED_LOSS | MISSED_WIN | PENDING | UNKNOWN
+  decidedAt: string | null;
+  createdAt: string;
+}
+
 export interface AppStatePayload {
   metrics: MasterMetrics;
   matches: AppMatch[];
   openSignals: AppSignal[];
   settledSignals: AppSignal[];
-  shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
+  shadowVetoes: AppVeto[];
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; mode?: "LIVE" | "SIM"; historySeed: string | null };
+  health: { espn: boolean; oddsApi: boolean; oddsApiIo: boolean; lastIngest: string | null; degraded: boolean; mode?: "LIVE" | "OFFLINE"; historySeed: string | null };
   ingestSummary: {
     matchesUpserted: number;
     signalsCreated: number;
@@ -117,6 +153,28 @@ export interface IngestSummary {
   ranAt: string;
 }
 
+export interface NewsItem {
+  id: string;
+  headline: string;
+  description: string;
+  published: string;
+  link: string;
+  image: string | null;
+  source: string;
+}
+
+export interface ScheduleSlot {
+  id: string;
+  slotTitle: string;
+  time: string;
+  channel: "PUBLIC" | "VIP";
+  kind: "RADAR" | "SIGNAL" | "EDUCATION" | "NEWS" | "REPORT";
+  enabled: boolean;
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const fmtUnits = (n: number, d = 1) =>
   n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 
@@ -137,38 +195,22 @@ export const statusColor = (status: string): string =>
     OPEN: "text-amber-300",
   })[status] ?? "text-slate-300";
 
-export const marketLabelFa = (key: string): string =>
-  ({
-    "1x2": "نتیجه نهایی",
-    dc_1x: "شانس دوبل 1X",
-    dc_x2: "شانس دوبل X2",
-    dnb: "برگشت مساوی",
-    btts: "گلزنی هر دو تیم",
-    "ou_1.5": "گل کل ۱.۵",
-    "ou_2.5": "گل کل ۲.۵",
-    "ou_3.5": "گل کل ۳.۵",
-    "tt_home_o1.5": "گل میزبان ۱.۵+",
-    "tt_away_o1.5": "گل مهمان ۱.۵+",
-    "combo_1x_u3.5": "کمبو 1X و زیر ۳.۵",
-    "combo_home_o1.5": "کمبو برد میزبان و ۱.۵+",
-    winner: "برنده مسابقه",
-    setbet_2_0: "نتیجه ست ۲-۰",
-    setbet_2_1: "نتیجه ست ۲-۱",
-    "tot_sets_o2.5": "ست کل ۲.۵+",
-    "tot_games_o20.5": "گیم کل ۲۰.۵+",
-    "tot_games_o21.5": "گیم کل ۲۱.۵+",
-    "tot_games_o22.5": "گیم کل ۲۲.۵+",
-    acca2: "میکس ۲ پایه",
-  })[key] ?? key;
+/** Safe readable date — NEVER renders 0000/0/00; invalid/zero values → "—". */
+export function fmtDateTimeFa(iso: string | null | undefined, withTime = true): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return "—";
+  try {
+    const date = d.toLocaleDateString("fa-IR", { year: "numeric", month: "2-digit", day: "2-digit" });
+    const time = d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return withTime ? `${date} ،${time}` : date;
+  } catch {
+    return "—";
+  }
+}
 
-export const selectionLabel = (s: string): string =>
-  ({
-    HOME: "میزبان",
-    AWAY: "مهمان",
-    DRAW: "مساوی",
-    OVER: "بالای خط",
-    UNDER: "زیر خط",
-    YES: "بله",
-    NO: "خیر",
-    ACCA: "ترکیب ۲ پایه",
-  })[s] ?? s;
+/** Live clock formatting (24h, locale-stable, used by the header/footer). */
+export function fmtClock(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}

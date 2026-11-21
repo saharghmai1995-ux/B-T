@@ -1,15 +1,18 @@
 /**
  * Feed Gatherer — assembles the full live pack from the network boundary.
- * Football 19 leagues + tennis ATP/WTA + season standings + optional 1xBet live.
+ * v2.0 ZERO-MOCK: no simulation fallback exists anywhere in the pipeline.
+ * Every row comes from a REAL API (ESPN Soccer 19 leagues, ESPN Tennis
+ * ATP/WTA incl. the past 7 days, optional The Odds API v4 / Odds-API.io).
+ * When the network is unreachable the pack is honestly EMPTY (degraded) and
+ * the UI surfaces a real offline state — never a simulated substitute.
  */
 
 import type { FeedMatch, FeedPack, TeamStat } from "@/core/types";
 import {
   fetchFootballFeed, fetchFootballStandings, fetchTennisFeed,
-  fetchLive1xBetOdds, FOOTBALL_LEAGUES, type LiveOddsRow,
+  fetchLive1xBetOdds, fetchOddsApiIoRows, FOOTBALL_LEAGUES, type LiveOddsRow,
 } from "@/core/bookmakers/odds-feed";
 import { getSetting, SETTING_KEYS } from "./settings";
-import { buildSimForwardPack, simStandings, SIM_FORCED } from "./sim-feed";
 
 export interface GatheredPack extends FeedPack {
   standings: Record<string, TeamStat[]>;
@@ -19,38 +22,11 @@ export interface GatheredPack extends FeedPack {
 export async function gatherFeed(): Promise<GatheredPack> {
   const notes: string[] = [];
 
-  // Offline guarantee — BET_SIM_FORCE=1 or a total ESPN outage swaps in the
-  // deterministic SIM pack so the cold-start NEVER ends with zero matches.
-  if (SIM_FORCED) {
-    const sim = buildSimForwardPack();
-    return {
-      fetchedAt: new Date(),
-      football: sim.football, tennis: sim.tennis,
-      degraded: true,
-      notes: ["SIM mode forced via BET_SIM_FORCE=1 — deterministic simulated fixtures"],
-      standings: simStandings(),
-      liveOdds: new Map<string, LiveOddsRow>(),
-    };
-  }
-
   const [football, tennis] = await Promise.all([
     fetchFootballFeed(), fetchTennisFeed(),
   ]);
   if (football.length === 0) notes.push("ESPN football scoreboard unreachable this run");
   if (tennis.length === 0) notes.push("ESPN tennis scoreboard unreachable this run");
-
-  if (football.length === 0 && tennis.length === 0) {
-    const sim = buildSimForwardPack();
-    notes.push("ESPN fully unreachable — deterministic SIM fixtures engaged (source=SIM)");
-    return {
-      fetchedAt: new Date(),
-      football: sim.football, tennis: sim.tennis,
-      degraded: true,
-      notes,
-      standings: simStandings(),
-      liveOdds: new Map<string, LiveOddsRow>(),
-    };
-  }
 
   // Standings only for leagues that actually have upcoming fixtures (cap 8).
   const upcomingLeagues = [...new Set(
@@ -64,10 +40,19 @@ export async function gatherFeed(): Promise<GatheredPack> {
     else notes.push(`No standings for ${lg}`);
   }));
 
-  const apiKey = await getSetting(SETTING_KEYS.oddsApiKey);
-  const liveOdds = await fetchLive1xBetOdds(apiKey || null);
-  if (apiKey) notes.push(`The Odds API live rows: ${liveOdds.size}`);
-  else notes.push("No The Odds API key — 1xBet prices run in honest ESTIMATE mode");
+  // Live book prices — both providers are optional; rows merge into one map.
+  const oddsKey = await getSetting(SETTING_KEYS.oddsApiKey);
+  const ioKey = await getSetting(SETTING_KEYS.oddsApiIoKey);
+  const [oddsApiRows, ioRows] = await Promise.all([
+    fetchLive1xBetOdds(oddsKey || null),
+    fetchOddsApiIoRows(ioKey || null),
+  ]);
+  const liveOdds = new Map<string, LiveOddsRow>();
+  for (const [k, v] of ioRows) liveOdds.set(k, v);
+  for (const [k, v] of oddsApiRows) liveOdds.set(k, v); // v4 wins on conflict
+  if (oddsKey) notes.push(`The Odds API live rows: ${oddsApiRows.size}`);
+  else notes.push("No The Odds API key — 1xBet prices run in honest MODEL-FAIR mode");
+  if (ioKey) notes.push(`Odds-API.io live rows: ${ioRows.size}`);
 
   return {
     fetchedAt: new Date(),

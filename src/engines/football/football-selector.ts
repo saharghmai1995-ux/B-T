@@ -7,7 +7,7 @@
 
 import type { CandidateSignal, MatchContext, TeamStat } from "@/core/types";
 import { devig1x2, devigTwoWay, marginPrice, BOOK_MARGIN } from "@/core/math/devig";
-import { TOXIC_LEAGUES, assertMarketAllowed } from "@/core/bookmakers/market-whitelist";
+import { TOXIC_LEAGUES, assertMarketAllowed, getMarket } from "@/core/bookmakers/market-whitelist";
 import { runDixonColes, stats1x2From, type TeamLite } from "./dixon-coles";
 export interface FootballQuote {
   marketKey: string;
@@ -93,7 +93,7 @@ export function pickSingleEv(
   const ev = best.modelProb * best.price - 1;
   return {
     match, line: "SINGLE_EV", marketKey: best.marketKey,
-    marketLabel: best.marketKey, selection: best.selection,
+    marketLabel: getMarket(best.marketKey)?.label ?? best.marketKey, selection: best.selection,
     modelProb: best.modelProb, trueProb: best.trueProb, price: best.price,
     evPct: Math.round(ev * 1000) / 10, stake: 100, stakeMode: "FLAT_100",
   };

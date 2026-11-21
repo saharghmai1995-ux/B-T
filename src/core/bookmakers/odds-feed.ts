@@ -31,10 +31,6 @@ export const LEAGUE_NAMES: Record<string, string> = {
 };
 
 const dayKey = (d: Date) => d.toISOString().slice(0, 10).replaceAll("-", "");
-const dateRange = (from: Date, days: number): string => {
-  const to = new Date(from.getTime() + days * 86400_000);
-  return `${dayKey(from)}-${dayKey(to)}`;
-};
 
 async function fetchJson(url: string, timeoutMs = 7000): Promise<unknown> {
   const ctl = new AbortController();
@@ -122,6 +118,8 @@ function parseSoccerEvent(e: Record<string, unknown>, leagueCode: string): FeedM
     espnEventId: String(e.id), sport: "football", league: LEAGUE_NAMES[leagueCode] ?? leagueCode,
     leagueCode, homeName, awayName, startTime: new Date(e.date as string), status,
     homeScore: status === "pre" ? null : scoreOf(home), awayScore: status === "pre" ? null : scoreOf(away),
+    homeLogo: ((home?.team as Record<string, unknown>)?.logo as string) ?? null,
+    awayLogo: ((away?.team as Record<string, unknown>)?.logo as string) ?? null,
     venue: ((comp.venue as Record<string, unknown>)?.fullName as string) ?? null,
     refOdds,
   };
@@ -228,6 +226,9 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
       const winnerIdx = cs.findIndex((c) => c.winner === true);
       const lines = (c: Record<string, unknown>) =>
         ((c.linescores as Array<{ value?: number }> | undefined) ?? []).map((l) => Number(l.value ?? 0));
+      const flagOf = (c: Record<string, unknown>) =>
+        ((c.athlete as Record<string, unknown>)?.flag as string) ??
+        ((c.athlete as Record<string, unknown>)?.headshot as string) ?? null;
       const la = lines(cs[0]), lb = lines(cs[1]);
       // Real set scores from per-set linescores (3-setters → 2-1, not 2-0).
       let swA = 0, swB = 0;
@@ -244,6 +245,7 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
         espnEventId: String(comp.id), sport: "tennis",
         league: `${tour.toUpperCase()} · ${eventName}`, leagueCode: tour,
         homeName: a, awayName: b, homeRank: rankOf(cs[0]), awayRank: rankOf(cs[1]),
+        homeLogo: flagOf(cs[0]), awayLogo: flagOf(cs[1]),
         startTime: new Date((comp.date as string) ?? (e.date as string)), status,
         homeScore: finished ? (swA + swB > 0 ? swA : winnerIdx === 0 ? 2 : 0) : null,
         awayScore: finished ? (swA + swB > 0 ? swB : winnerIdx === 1 ? 2 : 0) : null,
@@ -256,8 +258,14 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
   return out;
 }
 
+/**
+ * Tennis feed — CURRENT tournaments + the past 7 days of REAL ATP/WTA results
+ * (the Hawk-Eye 3D lab always has a genuine match to render, even with no
+ * pre-match singles scheduled today). ESPN tennis scoreboard accepts a range.
+ */
 export async function fetchTennisFeed(): Promise<FeedMatch[]> {
-  const range = dateRange(new Date(), 3);
+  const from = new Date(Date.now() - 7 * 86400_000);
+  const range = `${dayKey(from)}-${dayKey(new Date(Date.now() + 3 * 86400_000))}`;
   const jobs = (["atp", "wta"] as const).map(async (tour) => {
     const j = await fetchJsonRetry(`${ESPN_SITE}/tennis/${tour}/scoreboard?dates=${range}`);
     if (!j) return [];
@@ -311,14 +319,72 @@ export async function fetchLive1xBetOdds(apiKey: string | null): Promise<Map<str
   return out;
 }
 
-/** Polymarket Gamma — best-effort supplementary reference (may be blocked). */
-export async function fetchPolymarketHints(): Promise<Array<{ slug: string; price: number }>> {
-  try {
-    const j = await fetchJsonRetry(
-      "https://gamma-api.polymarket.com/events?tag=soccer&closed=false&limit=20", 0, 5000);
-    if (!j) return [];
-    return [];
-  } catch {
-    return [];
+/**
+ * Odds-API.io — supplementary real 1xBet feed (active when its own key is
+ * configured in the System & API Vault). Rows merge into the same map.
+ */
+export async function fetchOddsApiIoRows(apiKey: string | null): Promise<Map<string, LiveOddsRow>> {
+  const out = new Map<string, LiveOddsRow>();
+  if (!apiKey) return out;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const url = `https://odds-api.io/api/v2/odds?sport=football&bookmaker=1xbet&market=1x2&apiKey=${encodeURIComponent(apiKey)}`;
+  const j = await fetchJsonRetry(url, 0, 8000);
+  if (!j) return out;
+  const events = (Array.isArray(j) ? j : (j as { data?: Array<Record<string, unknown>> }).data) ?? [];
+  for (const ev of events) {
+    const home = (ev.homeTeam as string) ?? (ev.home_team as string) ?? "";
+    const away = (ev.awayTeam as string) ?? (ev.away_team as string) ?? "";
+    if (!home || !away) continue;
+    const row: LiveOddsRow = { book: "1XBET_LIVE" };
+    const odds = (ev.odds as Record<string, unknown> | undefined) ?? {};
+    const h1 = odds["1"] ?? odds.home ?? odds["home"];
+    const hx = odds.X ?? odds.draw ?? odds["draw"];
+    const h2 = odds["2"] ?? odds.away ?? odds["away"];
+    const num = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 1 ? Number(v) : undefined);
+    row.home = num(h1); row.draw = num(hx); row.away = num(h2);
+    if (row.home && row.away) out.set(`${norm(home)}|${norm(away)}|1XBET_LIVE`, row);
   }
+  return out;
+}
+
+/**
+ * Polymarket Gamma — real prediction-market reference prices (best effort;
+ * may be geo-blocked). Parses live market outcome prices from open events.
+ */
+export async function fetchPolymarketHints(): Promise<Array<{ slug: string; price: number; question: string }>> {
+  const j = await fetchJsonRetry(
+    "https://gamma-api.polymarket.com/events?closed=false&limit=20&order=volume24hr&ascending=false", 0, 5000);
+  if (!j) return [];
+  const out: Array<{ slug: string; price: number; question: string }> = [];
+  try {
+    for (const ev of (j as Array<Record<string, unknown>>) ?? []) {
+      const slug = (ev.slug as string) ?? "";
+      const question = (ev.title as string) ?? (ev.question as string) ?? "";
+      for (const mkt of (ev.markets as Array<Record<string, unknown>>) ?? []) {
+        const p = Number(mkt.outcomePrices);
+        if (Number.isFinite(p) && p > 0 && p < 1) {
+          out.push({ slug: slug || String(mkt.slug ?? ""), price: p, question });
+          break;
+        }
+        const arr = mkt.outcomePrices as string | Array<string> | undefined;
+        if (typeof arr === "string") {
+          const first = Number(JSON.parse(arr)[0]);
+          if (Number.isFinite(first) && first > 0 && first < 1) {
+            out.push({ slug: slug || String(mkt.slug ?? ""), price: first, question });
+            break;
+          }
+        } else if (Array.isArray(arr) && arr.length > 0) {
+          const first = Number(arr[0]);
+          if (Number.isFinite(first) && first > 0 && first < 1) {
+            out.push({ slug: slug || String(mkt.slug ?? ""), price: first, question });
+            break;
+          }
+        }
+      }
+      if (out.length >= 20) break;
+    }
+  } catch {
+    return out;
+  }
+  return out;
 }

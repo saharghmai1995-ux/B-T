@@ -15,7 +15,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { fmtPrice, fmtUnits, marketLabelFa, selectionLabel } from "@/lib/api-types";
+import { fmtPrice, fmtUnits } from "@/lib/api-types";
+import { officialBetLine } from "@/lib/markets";
 import { Trash2, Rocket, Copy, Layers, X } from "lucide-react";
 
 export default function BetSlipDrawer() {
@@ -38,7 +39,7 @@ export default function BetSlipDrawer() {
 
   async function copySummary() {
     const text = betslip
-      .map((b, i) => `${i + 1}. ${b.matchInfo} | ${marketLabelFa(b.marketKey)} ${selectionLabel(b.selection)} @ ${fmtPrice(b.price)} | ${stakes[b.signalId] ?? b.stake}u`)
+      .map((b, i) => `${i + 1}. ${b.matchInfo} | ${officialBetLine(b.marketKey, b.selection, b.marketLabel)} @ ${fmtPrice(b.price)} | ${stakes[b.signalId] ?? b.stake}u`)
       .join("\n");
     await navigator.clipboard.writeText(`NeoBet Quant Pro — BetSlip\n${text}\nTotal: ${totalStake}u | Combined: ${fmtPrice(combinedPrice)}`);
     setCopied(true);
@@ -77,8 +78,8 @@ export default function BetSlipDrawer() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate text-xs font-semibold">{b.matchInfo}</div>
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        {marketLabelFa(b.marketKey)} · {selectionLabel(b.selection)}
+                      <div className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">
+                        {officialBetLine(b.marketKey, b.selection, b.marketLabel)}
                       </div>
                     </div>
                     <Button
