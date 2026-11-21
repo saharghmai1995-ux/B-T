@@ -4,6 +4,7 @@
  */
 
 import type { CandidateSignal, MatchContext, TeamStat } from "@/core/types";
+import type { LiveOddsRow } from "@/core/bookmakers/odds-feed";
 import { buildFootballQuotes, pickSingleEv, pickAnchors, type FootballQuote } from "@/engines/football/football-selector";
 import { buildTennisQuotes, pickSingleEvTennis, pickAnchorsTennis, type TennisQuote } from "@/engines/tennis/tennis-selector";
 
@@ -40,7 +41,7 @@ export function buildFootballFactory(
 
 export function buildTennisFactory(
   match: MatchContext,
-  liveOdds?: Map<string, { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number; draw?: number }>,
+  liveOdds?: Map<string, LiveOddsRow>,
 ): FactoryOutput {
   const { quotes, elo } = buildTennisQuotes(match, liveOdds);
   const single = pickSingleEvTennis(match, quotes);
