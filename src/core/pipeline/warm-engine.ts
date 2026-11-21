@@ -54,6 +54,11 @@ export function startWarmEngine(): void {
   if (state.started) return;
   state.started = true;
   console.log("[warm-engine] started — dashboard stays warm every", WARM_INTERVAL_MS / 60000, "min");
+  // v2.6: the broadcast dispatcher rides the same boot — the PUBLIC/VIP
+  // channels are managed every 60s as long as the server is alive.
+  void import("@/core/telegram/dispatcher").then(({ startBroadcastDispatcher }) => {
+    startBroadcastDispatcher();
+  }).catch((e) => console.warn("[warm-engine] dispatcher boot failed:", (e as Error).message));
   setTimeout(() => {
     void tick();
     const t = setInterval(() => void tick(), WARM_INTERVAL_MS);
