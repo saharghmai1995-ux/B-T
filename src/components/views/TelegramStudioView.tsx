@@ -37,6 +37,7 @@ import type {
   NewsItem,
   ScheduleSlot,
 } from "@/lib/api-types";
+import ChannelManagerCard from "@/components/views/ChannelManagerCard";
 import {
   CalendarClock,
   CheckCircle2,
@@ -131,6 +132,7 @@ interface TelegramResp {
   sent?: boolean;
   transport?: string;
   error?: string;
+  lane?: string;
 }
 
 interface NewsResp {
@@ -948,6 +950,8 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   const [renderTick, setRenderTick] = useState(0);
   const [sending, setSending] = useState(false);
   const [eduOpen, setEduOpen] = useState<Record<string, boolean>>({});
+  // v2.6 — broadcast lane of the manual card send (PUBLIC | VIP | legacy chat)
+  const [sendLane, setSendLane] = useState<"DEFAULT" | "PUBLIC" | "VIP">("PUBLIC");
 
   // MODULE الف — broadcast schedule
   const [slots, setSlots] = useState<ScheduleSlot[]>([]);
@@ -1061,14 +1065,16 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       const res = await fetch("/api/telegram", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: mode, signalId: selectedSignal.id }),
+        // v2.6: send=true finally wires the button to the real sendPhoto
+        // pipeline, routed to the selected broadcast lane.
+        body: JSON.stringify({ kind: mode, signalId: selectedSignal.id, send: true, channel: sendLane }),
       });
       const j = (await res.json()) as TelegramResp;
       if (!j.ok) throw new Error(j.error ?? "پاسخ ناموفق از سرور");
-      if (j.sent) toast.success("با sendPhoto ارسال شد");
+      if (j.sent) toast.success(`کارت با sendPhoto به لاین ${j.lane ?? sendLane} ارسال شد`);
       else
-        toast.info("پوستر ساخته شد (ارسال نیاز به Bot Token دارد)", {
-          description: j.transport ?? "preview",
+        toast.error("ارسال انجام نشد", {
+          description: j.error ?? j.transport ?? "پوستر ساخته شد اما ارسال ناموفق بود",
         });
     } catch (e) {
       toast.error("خطای ارسال به تلگرام", { description: (e as Error).message });
@@ -1198,8 +1204,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3" data-testid="telegram-view">
-      {/* ============ Column 1 — POSTER ENGINE + Edu studio ============ */}
+      {/* ============ Column 1 — CHANNEL MANAGER + POSTER ENGINE + Edu studio ============ */}
       <div className="space-y-4 xl:col-span-2">
+        {/* v2.6 — Telegram connection & PUBLIC/VIP lane manager */}
+        <ChannelManagerCard />
+
         <Card className="glass glass-hover p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -1316,7 +1325,29 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
           </div>
 
           {/* action buttons */}
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {/* v2.6 — lane selector chips */}
+            <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-secondary/40 p-1">
+              {(["PUBLIC", "VIP", "DEFAULT"] as const).map((lane) => {
+                const active = sendLane === lane;
+                return (
+                  <button
+                    key={lane}
+                    onClick={() => setSendLane(lane)}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 text-[10px] font-bold transition-all",
+                      active
+                        ? lane === "VIP"
+                          ? "bg-amber-400 text-slate-950"
+                          : "bg-cyan-400 text-slate-950"
+                        : "text-slate-400 hover:text-slate-200",
+                    )}
+                  >
+                    {lane === "PUBLIC" ? "📢 عمومی" : lane === "VIP" ? "👑 VIP" : "💬 چت پیش‌فرض"}
+                  </button>
+                );
+              })}
+            </div>
             <Button
               onClick={downloadPng}
               className="bg-emerald-500 text-xs text-emerald-950 hover:bg-emerald-400"
@@ -1327,11 +1358,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               variant="outline"
               onClick={() => void sendNow()}
               disabled={sending || !selectedSignal || variant.type !== "match"}
-              title={selectedSignal ? "ارسال پوستر مسابقه" : "ابتدا یک مسابقه انتخاب کنید"}
+              title={selectedSignal ? `ارسال پوستر به لاین ${sendLane}` : "ابتدا یک مسابقه انتخاب کنید"}
               className="border-cyan-500/40 bg-cyan-500/5 text-xs text-cyan-300 hover:bg-cyan-500/10"
             >
               {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-              ✈️ ارسال فوری به @aineobet
+              ✈️ ارسال فوری کارت
             </Button>
             <Button
               variant="ghost"

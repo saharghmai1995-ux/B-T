@@ -150,7 +150,7 @@ const EDU_LESSONS: Array<{ tag: string; en: string }> = [
 ];
 
 function buildEducationText(dayKey: string): string {
-  const idx = Math.abs(dayKey.split("-").join("") | 0) % EDU_LESSONS.length;
+  const idx = Math.abs(Number(dayKey.split("-").join("")) || 0) % EDU_LESSONS.length;
   const l = EDU_LESSONS[idx];
   return `🎓 <b>QUANT LESSON — ${l.tag}</b>\n\n${l.en}\n\nNeoBet Quant Pro — education desk`;
 }
