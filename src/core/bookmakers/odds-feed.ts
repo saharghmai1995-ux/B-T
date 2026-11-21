@@ -286,23 +286,40 @@ export async function fetchTennisFeed(): Promise<FeedMatch[]> {
  */
 export interface LiveOddsRow { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number; draw?: number }
 
+/**
+ * The Odds API v4 unified fetcher (v2.5) — REAL 1xBet + Pinnacle prices for
+ * ACTIVE soccer AND tennis (ATP/WTA) sport keys through the 45-minute credit
+ * shield. Rows are name-keyed: `${norm(home)}|${norm(away)}|${BOOK}`.
+ */
 export async function fetchLive1xBetOdds(apiKey: string | null): Promise<Map<string, LiveOddsRow>> {
   const out = new Map<string, LiveOddsRow>();
   if (!apiKey) return out;
-  const sportMap: Record<string, string> = {
-    "eng.1": "soccer_epl", "esp.1": "soccer_spain_la_liga", "ita.1": "soccer_italy_serie_a",
-    "ger.1": "soccer_germany_bundesliga", "fra.1": "soccer_france_ligue_one",
-    "ned.1": "soccer_netherlands_eredivisie", "por.1": "soccer_portugal_primeira_liga",
-    "uefa.champions": "soccer_uefa_champs_league", "uefa.europa": "soccer_uefa_europa_league",
-  };
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
-  const jobs = Object.entries(sportMap).map(async ([lg, sp]) => {
-    const url = `https://api.the-odds-api.com/v4/sports/${sp}/odds/?regions=eu&markets=h2h&bookmakers=onexbet,pinnacle&oddsFormat=decimal&apiKey=${encodeURIComponent(apiKey)}`;
-    const j = await fetchJsonRetry(url, 0, 8000);
-    if (!j) return;
-    for (const ev of (j as Array<Record<string, unknown>>) ?? []) {
+
+  // FREE discovery (0 credits): which priority soccer + tennis keys are live today?
+  let sportKeys: string[] = [];
+  try {
+    const { soccerKeys, tennisKeys } = await fetchActiveOddsApiSportKeys(apiKey);
+    sportKeys = [...soccerKeys, ...tennisKeys];
+  } catch (e) {
+    feedStats.lastError = `sports ${(e as Error).message}`;
+  }
+  if (sportKeys.length === 0) return out;
+
+  // One cached request per active sport key (45-min shield).
+  const packs = await Promise.allSettled(
+    sportKeys.map(async (sp) => ({
+      sp,
+      ...(await fetchBookmakerLiveOddsCached(sp, apiKey)),
+    })),
+  );
+
+  for (const pack of packs) {
+    if (pack.status !== "fulfilled") continue;
+    for (const ev of pack.value.events) {
       const home = (ev.home_team as string) ?? "";
       const away = (ev.away_team as string) ?? "";
+      if (!home || !away) continue;
       for (const bk of (ev.bookmakers as Array<Record<string, unknown>>) ?? []) {
         const key = (bk.key as string) === "onexbet" ? "1XBET_LIVE" : "PINNACLE";
         const row: LiveOddsRow = { book: key as LiveOddsRow["book"] };
@@ -319,9 +336,133 @@ export async function fetchLive1xBetOdds(apiKey: string | null): Promise<Map<str
         if (row.home && row.away) out.set(`${norm(home)}|${norm(away)}|${key}`, row);
       }
     }
-  });
-  await Promise.allSettled(jobs);
+  }
   return out;
+}
+
+/**
+ * The Odds API v4 — REAL 1xBet + Pinnacle prices with a 45-minute in-memory
+ * cache (the "credit shield"): the 500 free monthly quota survives because
+ * every sport key is fetched at most once per 45 minutes per server process.
+ * v2.5: active sport keys (Soccer + Tennis ATP/WTA) auto-discovered via the
+ * FREE /sports endpoint (0 credits), and `x-requests-remaining` is captured
+ * from every response for the Settings status card.
+ */
+const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
+export const ODDS_CACHE_TTL_MS = 45 * 60 * 1000; // 45-min credit shield
+
+interface OddsCacheEntry {
+  fetchedAt: number;
+  remainingCredits: string | null;
+  events: Array<Record<string, unknown>>;
+}
+
+const liveOddsCache = new Map<string, OddsCacheEntry>();
+
+export interface OddsFeedStats {
+  remainingCredits: string | null;
+  lastFetchAt: number | null;
+  cachedSportKeys: string[];
+  lastError: string | null;
+}
+
+const feedStats: OddsFeedStats = {
+  remainingCredits: null, lastFetchAt: null, cachedSportKeys: [], lastError: null,
+};
+
+/** Snapshot of the Odds API usage state for the Settings status card. */
+export function getOddsFeedStats(): OddsFeedStats {
+  return { ...feedStats, cachedSportKeys: [...feedStats.cachedSportKeys] };
+}
+
+/**
+ * Discover today's ACTIVE The Odds API sport keys (FREE — 0 credits).
+ * Returns the priority soccer leagues (Top-5 Europe + UEFA + extras) and the
+ * active ATP/WTA tennis keys.
+ */
+export async function fetchActiveOddsApiSportKeys(apiKey: string): Promise<{
+  soccerKeys: string[];
+  tennisKeys: string[];
+}> {
+  if (!apiKey) return { soccerKeys: [], tennisKeys: [] };
+  // Free endpoint per The Odds API docs — costs 0 credits.
+  const res = await fetch(`${ODDS_API_BASE}/sports/?apiKey=${encodeURIComponent(apiKey)}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    feedStats.lastError = `sports HTTP ${res.status}`;
+    return { soccerKeys: [], tennisKeys: [] };
+  }
+  const sports = (await res.json()) as Array<{ key: string; group: string; active: boolean }>;
+
+  const prioritySoccer = [
+    "soccer_epl",
+    "soccer_spain_la_liga",
+    "soccer_italy_serie_a",
+    "soccer_germany_bundesliga",
+    "soccer_france_ligue_one",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_nations_league",
+    "soccer_brazil_campeonato",
+    "soccer_netherlands_eredivisie",
+  ];
+
+  const soccerKeys = sports
+    .filter((s) => s.active && prioritySoccer.includes(s.key))
+    .map((s) => s.key)
+    .slice(0, 6);
+
+  const tennisKeys = sports
+    .filter((s) => s.active && (s.key.startsWith("tennis_atp_") || s.key.startsWith("tennis_wta_")))
+    .map((s) => s.key)
+    .slice(0, 4);
+
+  return { soccerKeys, tennisKeys };
+}
+
+/**
+ * Cached per-sport odds fetch — 1xBet (onexbet) + Pinnacle in ONE request,
+ * EU region, h2h + totals, decimal format. Cache TTL 45 minutes protects the
+ * 500-credit monthly quota. Remaining quota is read from the response header.
+ */
+export async function fetchBookmakerLiveOddsCached(
+  sportKey: string,
+  apiKey: string,
+): Promise<{ events: Array<Record<string, unknown>>; remainingCredits: string | null }> {
+  const now = Date.now();
+  const cached = liveOddsCache.get(sportKey);
+  if (cached && now - cached.fetchedAt < ODDS_CACHE_TTL_MS) {
+    return { events: cached.events, remainingCredits: cached.remainingCredits };
+  }
+
+  const url =
+    `${ODDS_API_BASE}/sports/${sportKey}/odds/?apiKey=${encodeURIComponent(apiKey)}` +
+    `&regions=eu&markets=h2h,totals&bookmakers=onexbet,pinnacle&oddsFormat=decimal`;
+
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 9000);
+  try {
+    const res = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+    const remainingCredits = res.headers.get("x-requests-remaining");
+    if (remainingCredits) feedStats.remainingCredits = remainingCredits;
+    feedStats.lastFetchAt = now;
+    if (!res.ok) {
+      feedStats.lastError = `${sportKey} HTTP ${res.status}`;
+      return { events: [], remainingCredits };
+    }
+    const events = (await res.json()) as Array<Record<string, unknown>>;
+    liveOddsCache.set(sportKey, { fetchedAt: now, remainingCredits, events });
+    if (!feedStats.cachedSportKeys.includes(sportKey)) {
+      feedStats.cachedSportKeys = [...feedStats.cachedSportKeys, sportKey];
+    }
+    feedStats.lastError = null;
+    return { events, remainingCredits };
+  } catch (e) {
+    feedStats.lastError = `${sportKey} ${(e as Error).message}`;
+    return { events: [], remainingCredits: cached?.remainingCredits ?? null };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 /**

@@ -10,9 +10,9 @@
 import type { FeedMatch, FeedPack, TeamStat } from "@/core/types";
 import {
   fetchFootballFeed, fetchFootballStandings, fetchTennisFeed,
-  fetchLive1xBetOdds, fetchOddsApiIoRows, FOOTBALL_LEAGUES, type LiveOddsRow,
+  fetchLive1xBetOdds, fetchOddsApiIoRows, FOOTBALL_LEAGUES, getOddsFeedStats, type LiveOddsRow,
 } from "@/core/bookmakers/odds-feed";
-import { getSetting, SETTING_KEYS } from "./settings";
+import { getOddsApiKey, getSetting, SETTING_KEYS } from "./settings";
 
 export interface GatheredPack extends FeedPack {
   standings: Record<string, TeamStat[]>;
@@ -41,17 +41,26 @@ export async function gatherFeed(): Promise<GatheredPack> {
   }));
 
   // Live book prices — both providers are optional; rows merge into one map.
-  const oddsKey = await getSetting(SETTING_KEYS.oddsApiKey);
+  // The Odds API v4 key: DB setting first, then the git-ignored `.env.local`
+  // secret (THE_ODDS_API_KEY). Never logged in full, never sent to the client.
+  const oddsKey = (await getOddsApiKey()) ?? null;
   const ioKey = await getSetting(SETTING_KEYS.oddsApiIoKey);
   const [oddsApiRows, ioRows] = await Promise.all([
-    fetchLive1xBetOdds(oddsKey || null),
+    fetchLive1xBetOdds(oddsKey),
     fetchOddsApiIoRows(ioKey || null),
   ]);
   const liveOdds = new Map<string, LiveOddsRow>();
   for (const [k, v] of ioRows) liveOdds.set(k, v);
   for (const [k, v] of oddsApiRows) liveOdds.set(k, v); // v4 wins on conflict
-  if (oddsKey) notes.push(`The Odds API live rows: ${oddsApiRows.size}`);
-  else notes.push("No The Odds API key — 1xBet prices run in honest MODEL-FAIR mode");
+  if (oddsKey) {
+    const stats = getOddsFeedStats();
+    notes.push(`The Odds API v4 live rows: ${oddsApiRows.size} (soccer+tennis, 45m cache)`);
+    if (stats.remainingCredits) notes.push(`Odds API quota remaining: ${stats.remainingCredits}`);
+    if (stats.cachedSportKeys.length) notes.push(`Odds API cached keys: ${stats.cachedSportKeys.join(", ")}`);
+    if (stats.lastError) notes.push(`Odds API last error: ${stats.lastError}`);
+  } else {
+    notes.push("No The Odds API key — 1xBet prices run in honest MODEL-FAIR mode");
+  }
   if (ioKey) notes.push(`Odds-API.io live rows: ${ioRows.size}`);
 
   return {
