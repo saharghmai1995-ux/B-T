@@ -60,3 +60,6 @@ upload/
 download/
 
 .snapshots/
+
+# internal tool artifacts
+tool-results/
