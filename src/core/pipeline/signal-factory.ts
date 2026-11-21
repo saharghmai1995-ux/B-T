@@ -38,8 +38,11 @@ export function buildFootballFactory(
   };
 }
 
-export function buildTennisFactory(match: MatchContext): FactoryOutput {
-  const { quotes, elo } = buildTennisQuotes(match);
+export function buildTennisFactory(
+  match: MatchContext,
+  liveOdds?: Map<string, { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number; draw?: number }>,
+): FactoryOutput {
+  const { quotes, elo } = buildTennisQuotes(match, liveOdds);
   const single = pickSingleEvTennis(match, quotes);
   const anchors = pickAnchorsTennis(match, quotes);
   return {

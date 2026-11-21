@@ -181,7 +181,7 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
         singles += await persistSingle(f.single, bank);
       }
     } else {
-      const f = buildTennisFactory(ctx);
+      const f = buildTennisFactory(ctx, pack.liveOdds);
       quotes += await persistQuotes(id, f.quotes);
       if (f.single && !have.has(`${id}|${f.single.marketKey}|${f.single.selection}`)) {
         singles += await persistSingle(f.single, bank);
@@ -240,7 +240,7 @@ async function buildAccas(pack: GatheredPack): Promise<number> {
     const avg = leagueAverageGoals(pack.standings[m.leagueCode]);
     const f = m.sport === "football"
       ? buildFootballFactory(ctx, findTeamStat(pack.standings, m.leagueCode, m.homeName), findTeamStat(pack.standings, m.leagueCode, m.awayName), m.refOdds ?? null, avg)
-      : buildTennisFactory(ctx);
+      : buildTennisFactory(ctx, pack.liveOdds);
     for (const a of f.anchors.slice(0, 1)) {
       anchors.push({
         matchId: id.id, espnEventId: m.espnEventId,

@@ -4,7 +4,7 @@
  */
 
 import type { CandidateSignal, MatchContext } from "@/core/types";
-import { marginPrice, BOOK_MARGIN } from "@/core/math/devig";
+import { devigTwoWay, marginPrice, BOOK_MARGIN } from "@/core/math/devig";
 import { isEliteTennisTournament, getMarket } from "@/core/bookmakers/market-whitelist";
 import { runMarkovCopula } from "./markov-copula";
 
@@ -18,6 +18,10 @@ export interface TennisQuote {
 }
 
 const EV_THRESHOLD = 0.045;
+/** Live-1xBet rule (v2.5): end-of-season WTA 125K / Challenger events stay
+ * active — a LIVE 1xBet price with EV >= +4.0% is signalable even when the
+ * tournament is not elite. */
+export const LIVE_EV_THRESHOLD = 0.04;
 const PRICE_MIN = 1.72;
 const PRICE_MAX = 2.2;
 const ANCHOR_PROB = 0.79;
@@ -25,7 +29,15 @@ const ANCHOR_PRICE_MIN = 1.34;
 const ANCHOR_PRICE_MAX = 1.5;
 const TOP_RANK = 100;
 
-export function buildTennisQuotes(match: MatchContext): {
+/** Normalized name key — mirrors the odds-feed map keys. */
+export const tennisOddsKey = (home: string, away: string) =>
+  `${home.toLowerCase().replace(/[^a-z]/g, "")}|${away.toLowerCase().replace(/[^a-z]/g, "")}`;
+
+/** Build every whitelisted quote for one tennis fixture. */
+export function buildTennisQuotes(
+  match: MatchContext,
+  liveOdds?: Map<string, { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number }>,
+): {
   quotes: TennisQuote[];
   elo: { a: number; b: number };
 } {
@@ -56,19 +68,52 @@ export function buildTennisQuotes(match: MatchContext): {
       quotes.push({ marketKey, selection, modelProb, trueProb, price, source: "ESTIMATE" });
     }
   }
+
+  // v2.5 — attach REAL 1xBet (preferred) or Pinnacle winner prices when the
+  // live feed carries this matchup. The 2-way de-vig gives the market truth.
+  if (liveOdds) {
+    const key = tennisOddsKey(match.homeName, match.awayName);
+    const row = liveOdds.get(`${key}|1XBET_LIVE`) ?? liveOdds.get(`${key}|PINNACLE`);
+    if (row?.home && row?.away && row.home > 1.01 && row.away > 1.01) {
+      const [pH] = devigTwoWay(row.home, row.away);
+      const liveWinner: TennisQuote = {
+        marketKey: "winner", selection: "HOME",
+        modelProb: res.probs["winner@HOME"] ?? consensus.probs["winner@HOME"] ?? pH,
+        trueProb: pH, price: row.home, source: "LIVE",
+      };
+      const liveAway: TennisQuote = {
+        marketKey: "winner", selection: "AWAY",
+        modelProb: res.probs["winner@AWAY"] ?? consensus.probs["winner@AWAY"] ?? (1 - pH),
+        trueProb: 1 - pH, price: row.away, source: "LIVE",
+      };
+      // LIVE rows replace their ESTIMATE twin so provenance stays honest.
+      const filtered = quotes.filter(
+        (q) => !(q.marketKey === "winner" && (q.selection === "HOME" || q.selection === "AWAY")),
+      );
+      quotes.length = 0;
+      quotes.push(...filtered, liveWinner, liveAway);
+    }
+  }
+
   return { quotes, elo: { a: res.eloA, b: res.eloB } };
 }
 
-/** Line 1 — best single +EV pick of the fixture (Top-100 + elite tournaments). */
+/** Line 1 — best single +EV pick of the fixture (Top-100 + elite tournaments,
+ * relaxed to EV >= +4% for LIVE-1xBet matches so off-season WTA 125K stays alive). */
 export function pickSingleEvTennis(match: MatchContext, quotes: TennisQuote[]): CandidateSignal | null {
   const ranks = [match.homeRank, match.awayRank].filter((r): r is number => !!r);
-  if (ranks.some((r) => r > TOP_RANK)) return null; // Top-100 filter
-  if (!isEliteTennisTournament(match.league)) return null;
+  const hasLive = quotes.some((q) => q.source === "LIVE");
+  if (!hasLive && ranks.some((r) => r > TOP_RANK)) return null; // Top-100 filter (estimates only)
+  if (!hasLive && !isEliteTennisTournament(match.league)) return null;
   let best: TennisQuote | null = null;
   let bestEv = -Infinity;
   for (const q of quotes) {
     const ev = q.modelProb * q.price - 1;
-    if (ev >= EV_THRESHOLD && q.price >= PRICE_MIN && q.price <= PRICE_MAX && ev > bestEv) {
+    const threshold = q.source === "LIVE" ? LIVE_EV_THRESHOLD : EV_THRESHOLD;
+    const priceOk = q.source === "LIVE"
+      ? q.price >= 1.45 && q.price <= 2.6
+      : q.price >= PRICE_MIN && q.price <= PRICE_MAX;
+    if (ev >= threshold && priceOk && ev > bestEv) {
       best = q;
       bestEv = ev;
     }
@@ -79,7 +124,7 @@ export function pickSingleEvTennis(match: MatchContext, quotes: TennisQuote[]): 
     marketLabel: getMarket(best.marketKey)?.label ?? best.marketKey,
     selection: best.selection, modelProb: best.modelProb, trueProb: best.trueProb,
     price: best.price, evPct: Math.round(bestEv * 1000) / 10,
-    stake: 100, stakeMode: "FLAT_100",
+    stake: 20, stakeMode: "KELLY_025",
   };
 }
 
