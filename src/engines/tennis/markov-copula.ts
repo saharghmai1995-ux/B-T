@@ -113,7 +113,11 @@ interface SimOutcome {
   gameMargin: number; // gamesA - gamesB
 }
 
-/** Best-of-3 game-by-game simulation with copula-coupled day-form. */
+/** Best-of-3 game-by-game simulation with copula-coupled day-form.
+ * v2.5 FIX: winGame simulates from the SERVER's perspective — when B serves,
+ * `true` means B holds the game, so the outcome must be INVERTED for A.
+ * The old code credited B's holds to A, saturating every match at ~94%/6%
+ * and poisoning all tennis market probabilities. */
 function simulateMatch(p0: number, rng: () => number): SimOutcome {
   let setsA = 0, setsB = 0, margin = 0;
   while (setsA < 2 && setsB < 2) {
@@ -123,7 +127,9 @@ function simulateMatch(p0: number, rng: () => number): SimOutcome {
     const pServeB = Math.min(0.88, Math.max(0.35, 1 - p0 - shift + SERVE_ADV));
     let gA = 0, gB = 0, servingA = true;
     for (let i = 0; i < 40; i++) {
-      const aWins = winGame(servingA ? pServeA : pServeB, rng);
+      const serverIsA = servingA;
+      const serverWins = winGame(serverIsA ? pServeA : pServeB, rng);
+      const aWins = serverIsA ? serverWins : !serverWins; // invert on B serve
       if (aWins) gA++; else gB++;
       servingA = !servingA;
       if (gA >= 6 && gB >= 6) {
