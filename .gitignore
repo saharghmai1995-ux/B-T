@@ -58,3 +58,5 @@ server.log
 .zscripts/
 upload/
 download/
+
+.snapshots/
