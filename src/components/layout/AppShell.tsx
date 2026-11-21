@@ -74,8 +74,11 @@ export function useAppState() {
       if (!j.ok) throw new Error(j.error ?? "bootstrap failed");
       return j.state as AppStatePayload;
     },
-    staleTime: 45_000,
-    refetchInterval: 90_000,
+    // v2.5 warm dashboard — light polling keeps every view hot without
+    // hammering the server: the server warm-engine does the heavy ingest.
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -308,7 +311,7 @@ export default function AppShell() {
             <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
                 <span className="flex items-center gap-2">
-                  NeoBet Quant Pro v2.0 · هسته مالی SHA-256 · ضرایب واقعی 1xBet و BetForward · Zero-Mock
+                  NeoBet Quant Pro v2.5 · هسته مالی SHA-256 · ضرایب زنده 1xBet/Pinnacle · کلِی یک‌چهارم یکپارچه · Zero-Mock
                 </span>
                 <span className="flex items-center gap-3">
                   <LiveClock className="text-cyan-300" />
