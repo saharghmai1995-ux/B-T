@@ -9,8 +9,13 @@ export const SETTING_KEYS = {
   oddsApiIoKey: "oddsApiIoKey",
   telegramBotToken: "telegramBotToken",
   telegramChatId: "telegramChatId",
+  telegramPublicChannelId: "telegramPublicChannelId",
+  telegramVipChannelId: "telegramVipChannelId",
   lastTier: "lastTier",
 } as const;
+
+/** Broadcast routing target — the public channel, the VIP channel, or the legacy single chat. */
+export type BroadcastChannel = "PUBLIC" | "VIP" | "DEFAULT";
 
 export async function getSetting(key: string): Promise<string | null> {
   const row = await db.setting.findUnique({ where: { key } });
@@ -39,6 +44,41 @@ export async function getOddsApiKey(): Promise<string | null> {
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : null;
 }
 
+/**
+ * Telegram bot token resolution order:
+ * 1. DB setting (saved from the Settings panel)
+ * 2. `.env.local` TELEGRAM_BOT_TOKEN (server-only secret, git-ignored)
+ * Never returned to the client — panels only ever receive a masked copy.
+ */
+export async function getTelegramBotToken(): Promise<string | null> {
+  const fromDb = await getSetting(SETTING_KEYS.telegramBotToken);
+  if (fromDb && fromDb.trim()) return fromDb.trim();
+  const fromEnv = process.env.TELEGRAM_BOT_TOKEN;
+  return fromEnv && fromEnv.trim() ? fromEnv.trim() : null;
+}
+
+/** Channel target for the public or VIP broadcast lane (e.g. "@aineopublic" or "-1001234567890"). */
+export async function getChannelId(channel: Exclude<BroadcastChannel, "DEFAULT">): Promise<string | null> {
+  const key = channel === "VIP" ? SETTING_KEYS.telegramVipChannelId : SETTING_KEYS.telegramPublicChannelId;
+  const v = await getSetting(key);
+  return v && v.trim() ? v.trim() : null;
+}
+
+/** Legacy single-chat target kept for backwards compatibility. */
+export async function getDefaultChatId(): Promise<string | null> {
+  const v = await getSetting(SETTING_KEYS.telegramChatId);
+  return v && v.trim() ? v.trim() : null;
+}
+
+/**
+ * Resolve the concrete chat id for a broadcast lane:
+ * PUBLIC/VIP → configured channel id; DEFAULT → legacy chat id; null when unset.
+ */
+export async function resolveBroadcastTarget(channel: BroadcastChannel): Promise<string | null> {
+  if (channel === "DEFAULT") return getDefaultChatId();
+  return getChannelId(channel);
+}
+
 /** Masked public view of settings for the client (never leak full keys). */
 export function maskSettings(s: Record<string, string>): Record<string, string> {
   const mask = (v?: string) => (v ? `${v.slice(0, 4)}••••${v.slice(-4)}` : "");
@@ -47,5 +87,7 @@ export function maskSettings(s: Record<string, string>): Record<string, string> 
     oddsApiIoKey: mask(s[SETTING_KEYS.oddsApiIoKey]),
     telegramBotToken: mask(s[SETTING_KEYS.telegramBotToken]),
     telegramChatId: s[SETTING_KEYS.telegramChatId] ?? "",
+    telegramPublicChannelId: s[SETTING_KEYS.telegramPublicChannelId] ?? "",
+    telegramVipChannelId: s[SETTING_KEYS.telegramVipChannelId] ?? "",
   };
 }
