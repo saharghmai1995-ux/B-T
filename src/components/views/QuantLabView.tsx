@@ -2,7 +2,7 @@
 
 /**
  * View 3 — QuantLabView: 3D lab tabs (football pitch / tennis court / QQL).
- * Tabs are client state only — the page never resets.
+ * Tabs are pure client state — the page never resets them.
  */
 
 import { useState } from "react";
@@ -14,13 +14,29 @@ import type { AppStatePayload } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 const TABS = [
-  { key: "pitch", label: "⚽ زمین فوتبال 3D" },
-  { key: "court", label: "🎾 زمین تنیس Hawk-Eye 3D" },
-  { key: "qql", label: "🧬 کنسول QQL & AI RCA" },
+  {
+    key: "pitch",
+    label: "⚽ زمین فوتبال 3D",
+    desc: "شبیه‌سازی دیکسون-کولز، نقشه حرارتی حملات و بردار انتظار گل (λ) روی زمین سه‌بعدی",
+    activeCls: "border border-emerald-500/30 bg-emerald-500/15 text-emerald-300 shadow-[0_0_18px_rgba(52,211,153,0.15)]",
+  },
+  {
+    key: "court",
+    label: "🎾 زمین تنیس Hawk-Eye 3D",
+    desc: "دوئل Elo، موتور مارکوف-کاپولا و مسیر سرویس منحنی با تم رنگی سطح زمین (هارد/خاک رس/چمن)",
+    activeCls: "border border-cyan-500/30 bg-cyan-500/15 text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.15)]",
+  },
+  {
+    key: "qql",
+    label: "🧬 کنسول QQL & AI RCA",
+    desc: "پرس‌وجوی تحلیلی QQL روی سیگنال‌ها و تحلیل ریشه‌ای علّی (AI Causal RCA) خوشه‌های زیان",
+    activeCls: "border border-violet-500/30 bg-violet-500/15 text-violet-300 shadow-[0_0_18px_rgba(167,139,250,0.15)]",
+  },
 ] as const;
 
 export default function QuantLabView({ state }: { state: AppStatePayload }) {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("pitch");
+  const current = TABS.find((t) => t.key === tab) ?? TABS[0];
 
   return (
     <div className="space-y-4" data-testid="lab-view">
@@ -33,7 +49,7 @@ export default function QuantLabView({ state }: { state: AppStatePayload }) {
               className={cn(
                 "rounded-xl px-3 py-2 text-xs font-medium transition-all",
                 tab === t.key
-                  ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                  ? t.activeCls
                   : "border border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
@@ -41,6 +57,7 @@ export default function QuantLabView({ state }: { state: AppStatePayload }) {
             </button>
           ))}
         </div>
+        <p className="mt-1.5 px-1 text-[10px] leading-5 text-muted-foreground">{current.desc}</p>
       </Card>
 
       {tab === "pitch" && <Pitch3D matches={state.matches} />}

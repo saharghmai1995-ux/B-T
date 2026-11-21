@@ -50,9 +50,12 @@ const SPORTS: Array<{ key: "all" | "football" | "tennis"; label: string }> = [
 function LiveClock({ className }: { className?: string }) {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
-    setNow(new Date());
+    const raf = requestAnimationFrame(() => setNow(new Date()));
     const t = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(t);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearInterval(t);
+    };
   }, []);
   return (
     <span className={cn("num inline-flex items-center gap-1.5", className)} suppressHydrationWarning>

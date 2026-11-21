@@ -70,6 +70,8 @@ function parseSoccerPast(e: Record<string, unknown>, leagueCode: string): FeedMa
     league: LEAGUE_NAMES_FALLBACK[leagueCode] ?? leagueCode, leagueCode,
     homeName, awayName, startTime: new Date(e.date as string), status,
     homeScore, awayScore,
+    homeLogo: ((home?.team as Record<string, unknown>)?.logo as string) ?? null,
+    awayLogo: ((away?.team as Record<string, unknown>)?.logo as string) ?? null,
     venue: ((comp.venue as Record<string, unknown>)?.fullName as string) ?? null,
     refOdds: null,
   };
@@ -121,6 +123,12 @@ function parseTennisPast(e: Record<string, unknown>, tour: "atp" | "wta"): FeedM
       if (winnerIdx < 0) continue;
       const rankOf = (c: Record<string, unknown>) =>
         ((c.curatedRank as Record<string, unknown> | undefined)?.current as number | undefined) ?? null;
+      const flagOf = (c: Record<string, unknown>) => {
+        const athlete = (c.athlete as Record<string, unknown> | undefined) ?? {};
+        const flag = athlete.flag;
+        const href = typeof flag === "string" ? flag : ((flag as { href?: string } | undefined)?.href ?? null);
+        return href ?? ((athlete.headshot as string) ?? null);
+      };
       const setsOf = (c: Record<string, unknown>) =>
         ((c.linescores as Array<{ value?: number }> | undefined) ?? []).map((l) => Number(l.value ?? 0));
       const sa = setsOf(cs[0]), sb = setsOf(cs[1]);
@@ -143,6 +151,7 @@ function parseTennisPast(e: Record<string, unknown>, tour: "atp" | "wta"): FeedM
         espnEventId: String(comp.id), sport: "tennis",
         league: `${tour.toUpperCase()} · ${eventName}`, leagueCode: tour,
         homeName: a, awayName: b, homeRank: rankOf(cs[0]), awayRank: rankOf(cs[1]),
+        homeLogo: flagOf(cs[0]), awayLogo: flagOf(cs[1]),
         startTime: new Date((comp.date as string) ?? (e.date as string)), status: "post",
         homeScore: setScoreHome, awayScore: setScoreAway,
         detail: notes || detail, round: (e.shortName as string) ?? null,

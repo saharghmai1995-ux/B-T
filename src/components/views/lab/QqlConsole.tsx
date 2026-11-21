@@ -3,6 +3,8 @@
 /**
  * QQL + AI RCA interactive console.
  * The query runs server-side (/api/qql) — the UI is a pure display.
+ * Presets use clean Persian titles; the FULL executed query is always shown
+ * in a mono code box under the button row (no "..." truncation).
  */
 
 import { useState } from "react";
@@ -21,15 +23,17 @@ interface RcaFinding {
   severity: "LOW" | "MEDIUM" | "HIGH"; hypothesis: string; recommendation: string;
 }
 
-const EXAMPLES = [
-  "SELECT * WHERE sport = football AND status = LOST ORDER BY netProfit ASC LIMIT 10",
-  "SELECT * WHERE league CONTAINS Premier ORDER BY evPct DESC LIMIT 10",
-  "RCA LOSSES BY league",
-  "RCA LOSSES BY line",
+const PRESETS: Array<{ title: string; sql: string }> = [
+  { title: "🧾 ضررهای اخیر", sql: "SELECT * WHERE status = LOST ORDER BY netProfit ASC LIMIT 10" },
+  { title: "🏆 لیگ پریمیرشیپ", sql: "SELECT * WHERE league CONTAINS Premier ORDER BY evPct DESC LIMIT 10" },
+  { title: "🔬 RCA خوشه‌های زیان (لیگ)", sql: "RCA LOSSES BY league" },
+  { title: "🔬 RCA خوشه‌های زیان (خط تولید)", sql: "RCA LOSSES BY line" },
+  { title: "💰 بالاترین EV فوتبال", sql: "SELECT * WHERE sport = football AND evPct > 5 ORDER BY evPct DESC LIMIT 10" },
 ];
 
 export function QqlConsole() {
-  const [query, setQuery] = useState("SELECT * WHERE status = LOST ORDER BY netProfit ASC LIMIT 10");
+  const [query, setQuery] = useState(PRESETS[0].sql);
+  const [activePreset, setActivePreset] = useState<number | null>(0);
   const [rows, setRows] = useState<QqlRow[] | null>(null);
   const [findings, setFindings] = useState<RcaFinding[] | null>(null);
   const [kind, setKind] = useState<"SELECT" | "RCA" | null>(null);
@@ -66,28 +70,54 @@ export function QqlConsole() {
       <div className="glass p-3">
         <textarea
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActivePreset(null); // manual edit → no preset is active anymore
+          }}
           rows={2}
           dir="ltr"
           className="num w-full resize-none rounded-lg border border-slate-800 bg-[#0A0F1C] p-2.5 text-left text-[11px] text-emerald-200 outline-none focus:border-emerald-500/50"
           placeholder="SELECT * WHERE sport = football AND evPct > 5"
           aria-label="پرس‌وجوی QQL"
         />
+
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <Button size="sm" onClick={() => run()} disabled={busy} className="gap-1.5 bg-emerald-500 text-emerald-950 hover:bg-emerald-400">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
             اجرا
           </Button>
-          {EXAMPLES.map((ex) => (
+          {PRESETS.map((p, i) => (
             <button
-              key={ex}
-              onClick={() => { setQuery(ex); run(ex); }}
-              className="num rounded-lg border border-slate-800 bg-secondary/50 px-2 py-1 text-[10px] text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
+              key={p.sql}
+              onClick={() => {
+                setQuery(p.sql);
+                setActivePreset(i);
+                run(p.sql);
+              }}
+              className={cn(
+                "rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                activePreset === i
+                  ? "border-neon-cyan bg-cyan-500/10 text-cyan-200"
+                  : "border-slate-800 bg-secondary/50 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200",
+              )}
             >
-              {ex.slice(0, 34)}…
+              {p.title}
             </button>
           ))}
         </div>
+
+        {/* full executed query — never truncated */}
+        {activePreset !== null && (
+          <div className="mt-2">
+            <div className="mb-1 text-[10px] text-slate-400">کد کامل اجراشده:</div>
+            <code
+              dir="ltr"
+              className="num block overflow-x-auto whitespace-pre-wrap break-all rounded-lg border border-slate-800 bg-[#0A0F1C] p-2.5 text-left text-[11px] leading-5 text-cyan-200"
+            >
+              {PRESETS[activePreset].sql}
+            </code>
+          </div>
+        )}
       </div>
 
       {kind === "RCA" && findings && (

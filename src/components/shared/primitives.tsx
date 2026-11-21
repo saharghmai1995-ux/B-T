@@ -143,7 +143,7 @@ export function TeamAvatar({
   const [failed, setFailed] = useState(false);
   if (logo && !failed) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
+       
       <img
         src={logo}
         alt={`${name} logo`}

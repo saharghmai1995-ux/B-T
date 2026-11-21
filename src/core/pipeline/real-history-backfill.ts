@@ -18,6 +18,7 @@ import { db } from "@/lib/db";
 import type { FeedMatch, TeamStat } from "@/core/types";
 import { fetchFootballPastDay, fetchTennisPastRange, pastDayKey, fetchFootballSummaryOdds } from "@/core/bookmakers/espn-history";
 import { fetchFootballStandings, FOOTBALL_LEAGUES } from "@/core/bookmakers/odds-feed";
+import { getMarket } from "@/core/bookmakers/market-whitelist";
 import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
 import { resolveSelection } from "@/core/ledger/settlement-engine";
 import { chooseStakeMode, accaPrice, STARTING_BANK } from "@/core/math/kelly";
@@ -257,7 +258,9 @@ async function buildCandidates(
         league: m.league,
         label: `${m.homeName} vs ${m.awayName} — ${cand.marketKey} ${cand.selection}`,
         marketKey: cand.marketKey,
-        marketLabel: ("marketLabel" in cand ? String(cand.marketLabel) : cand.marketKey),
+        marketLabel: ("marketLabel" in cand && cand.marketLabel
+          ? String(cand.marketLabel)
+          : getMarket(cand.marketKey)?.label ?? cand.marketKey),
         selection: cand.selection, modelProb: cand.modelProb, trueProb: cand.trueProb,
         price: cand.price, evPct, startTime: m.startTime,
         fixture,
@@ -390,29 +393,19 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
     else void_++;
   }
 
-  // Shadow-ledger vetoes — each veto resolves its "would-have-been" pick
-  // against the REAL final score: LOST → the veto saved the stake;
-  // WON → the veto cost a missed win (honest negative saving).
   let vetoCount = 0;
-  let savedTotal = 0;
   for (const v of vetoes.slice(0, 14)) {
     let verdict = "UNKNOWN";
     let savedUnits: number | null = null;
-    let ftScore: string | null = null;
-    let decidedAt: Date | null = null;
     if (v.wouldHaveBeen) {
       const pick = v.wouldHaveBeen;
       const verdict_ = resolveSelection(pick.marketKey, pick.selection, pick.fixture);
-      ftScore = `${pick.fixture.homeScore}-${pick.fixture.awayScore}`;
-      decidedAt = settleTime(v.startTime);
       if (verdict_.status === "LOST") {
         verdict = "SAVED_LOSS";
         savedUnits = 100; // flat stake spared by the veto
-        savedTotal = round2(savedTotal + 100);
       } else if (verdict_.status === "WON") {
         verdict = "MISSED_WIN";
         savedUnits = round2(-100 * (pick.price - 1)); // honest opportunity cost
-        savedTotal = round2(savedTotal + savedUnits);
       } else {
         verdict = "PENDING";
         savedUnits = 0;
@@ -426,12 +419,13 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
         selection: v.wouldHaveBeen ? v.wouldHaveBeen.selection : null,
         price: v.wouldHaveBeen ? v.wouldHaveBeen.price : null,
         modelProb: v.wouldHaveBeen ? v.wouldHaveBeen.modelProb : null,
-        ftScore, savedUnits, verdict, decidedAt,
+        ftScore: v.ftScore, // REAL final score of the vetoed fixture
+        savedUnits, verdict,
+        decidedAt: settleTime(v.startTime),
       },
     });
     vetoCount++;
   }
-  void savedTotal;
 
   // Poster queue for Telegram Studio — recent signals + recent results.
   let posters = 0;

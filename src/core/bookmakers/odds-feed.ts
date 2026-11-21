@@ -226,9 +226,14 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
       const winnerIdx = cs.findIndex((c) => c.winner === true);
       const lines = (c: Record<string, unknown>) =>
         ((c.linescores as Array<{ value?: number }> | undefined) ?? []).map((l) => Number(l.value ?? 0));
-      const flagOf = (c: Record<string, unknown>) =>
-        ((c.athlete as Record<string, unknown>)?.flag as string) ??
-        ((c.athlete as Record<string, unknown>)?.headshot as string) ?? null;
+      const flagOf = (c: Record<string, unknown>) => {
+        const athlete = (c.athlete as Record<string, unknown> | undefined) ?? {};
+        // ESPN flag is either a URL string or an object {href, alt, rel}; the
+        // tennis headshot is always a plain URL string.
+        const flag = athlete.flag;
+        const href = typeof flag === "string" ? flag : ((flag as { href?: string } | undefined)?.href ?? null);
+        return href ?? ((athlete.headshot as string) ?? null);
+      };
       const la = lines(cs[0]), lb = lines(cs[1]);
       // Real set scores from per-set linescores (3-setters → 2-1, not 2-0).
       let swA = 0, swB = 0;
