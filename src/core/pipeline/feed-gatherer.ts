@@ -9,6 +9,7 @@ import {
   fetchLive1xBetOdds, FOOTBALL_LEAGUES, type LiveOddsRow,
 } from "@/core/bookmakers/odds-feed";
 import { getSetting, SETTING_KEYS } from "./settings";
+import { buildSimForwardPack, simStandings, SIM_FORCED } from "./sim-feed";
 
 export interface GatheredPack extends FeedPack {
   standings: Record<string, TeamStat[]>;
@@ -17,11 +18,39 @@ export interface GatheredPack extends FeedPack {
 
 export async function gatherFeed(): Promise<GatheredPack> {
   const notes: string[] = [];
+
+  // Offline guarantee — BET_SIM_FORCE=1 or a total ESPN outage swaps in the
+  // deterministic SIM pack so the cold-start NEVER ends with zero matches.
+  if (SIM_FORCED) {
+    const sim = buildSimForwardPack();
+    return {
+      fetchedAt: new Date(),
+      football: sim.football, tennis: sim.tennis,
+      degraded: true,
+      notes: ["SIM mode forced via BET_SIM_FORCE=1 — deterministic simulated fixtures"],
+      standings: simStandings(),
+      liveOdds: new Map<string, LiveOddsRow>(),
+    };
+  }
+
   const [football, tennis] = await Promise.all([
     fetchFootballFeed(), fetchTennisFeed(),
   ]);
   if (football.length === 0) notes.push("ESPN football scoreboard unreachable this run");
   if (tennis.length === 0) notes.push("ESPN tennis scoreboard unreachable this run");
+
+  if (football.length === 0 && tennis.length === 0) {
+    const sim = buildSimForwardPack();
+    notes.push("ESPN fully unreachable — deterministic SIM fixtures engaged (source=SIM)");
+    return {
+      fetchedAt: new Date(),
+      football: sim.football, tennis: sim.tennis,
+      degraded: true,
+      notes,
+      standings: simStandings(),
+      liveOdds: new Map<string, LiveOddsRow>(),
+    };
+  }
 
   // Standings only for leagues that actually have upcoming fixtures (cap 8).
   const upcomingLeagues = [...new Set(

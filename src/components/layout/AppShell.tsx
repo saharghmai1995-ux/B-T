@@ -184,11 +184,21 @@ export default function AppShell() {
 
             <div className="flex-1 md:hidden" />
 
-            {/* Feed health */}
-            <div className="hidden items-center gap-1.5 rounded-xl border border-slate-800 bg-secondary/50 px-2.5 py-1.5 lg:flex">
-              <span className={cn("size-2 rounded-full", state?.health.espn ? "pulse-dot bg-emerald-400 text-emerald-400" : "bg-red-500 text-red-500")} />
-              <span className="text-[11px] text-muted-foreground">1xBet / ESPN Live</span>
-            </div>
+            {/* Feed health — honest LIVE vs SIM labeling */}
+            {state?.health.mode === "SIM" ? (
+              <div
+                className="hidden items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 lg:flex"
+                title="فید ESPN در دسترس نیست — داده‌ها از فید شبیه‌سازی قطعی (SIM) تأمین می‌شوند"
+              >
+                <span className="pulse-dot size-2 rounded-full bg-amber-400 text-amber-400" />
+                <span className="text-[11px] text-amber-300">حالت شبیه‌سازی (SIM)</span>
+              </div>
+            ) : (
+              <div className="hidden items-center gap-1.5 rounded-xl border border-slate-800 bg-secondary/50 px-2.5 py-1.5 lg:flex">
+                <span className={cn("size-2 rounded-full", state?.health.espn ? "pulse-dot bg-emerald-400 text-emerald-400" : "bg-red-500 text-red-500")} />
+                <span className="text-[11px] text-muted-foreground">1xBet / ESPN Live</span>
+              </div>
+            )}
 
             {/* Tier switch (demo paywall) */}
             <div className="hidden items-center rounded-xl border border-slate-800 bg-secondary/50 p-0.5 sm:flex">
@@ -271,7 +281,12 @@ export default function AppShell() {
             {/* Sticky footer — pushed naturally by content, sticks on short pages */}
             <footer className="mt-auto pt-6 pb-2">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
-                <span>NeoBet Quant Pro · هسته مالی SHA-256 · ضرایب واقعی 1xBet و BetForward</span>
+                <span>
+                  NeoBet Quant Pro · هسته مالی SHA-256 · ضرایب واقعی 1xBet و BetForward
+                  {state?.health.mode === "SIM" && (
+                    <span className="mr-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">فید: SIM</span>
+                  )}
+                </span>
                 <span className="num">
                   آخرین همگام‌سازی: {state?.health.lastIngest ? new Date(state.health.lastIngest).toLocaleTimeString("fa-IR") : "—"}
                   {todaySignals > 0 && ` · سیگنال امروز: ${todaySignals}`}

@@ -19,7 +19,7 @@ export interface AppState {
   settledSignals: AppSignal[];
   shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; historySeed: string | null };
+  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; mode: "LIVE" | "SIM"; historySeed: string | null };
   ingestSummary: IngestSummary | null;
   historySeed: HistorySeedSummary | null;
   generatedAt: string;
@@ -135,6 +135,14 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     toAppSignals(open), toAppSignals(settled),
   ]);
 
+  // Feed mode honesty: the LAST ingest run decides whether the current board
+  // is live ESPN data or the deterministic SIM fallback.
+  let lastDegraded: boolean | undefined;
+  if (ingest?.lastSummary) {
+    try { lastDegraded = (JSON.parse(ingest.lastSummary) as { degraded?: boolean }).degraded; } catch { /* ignore */ }
+  }
+  const degraded = opts?.ingestSummary?.degraded ?? lastDegraded ?? false;
+
   return {
     metrics,
     matches,
@@ -148,7 +156,8 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
       espn: matches.length > 0,
       oddsApi: !!settings[SETTING_KEYS.oddsApiKey],
       lastIngest: ingest?.lastRun.toISOString() ?? null,
-      degraded: false,
+      degraded,
+      mode: degraded ? "SIM" : "LIVE",
       historySeed: settings["historySeededAt"] ?? null,
     },
     ingestSummary: opts?.ingestSummary ?? null,

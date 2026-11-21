@@ -77,7 +77,7 @@ export interface AppStatePayload {
   settledSignals: AppSignal[];
   shadowVetoes: Array<{ id: string; signalRef: string; reason: string; createdAt: string }>;
   settings: Record<string, string>;
-  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; historySeed: string | null };
+  health: { espn: boolean; oddsApi: boolean; lastIngest: string | null; degraded: boolean; mode?: "LIVE" | "SIM"; historySeed: string | null };
   ingestSummary: {
     matchesUpserted: number;
     signalsCreated: number;

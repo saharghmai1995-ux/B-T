@@ -23,6 +23,7 @@ import { lockSignal } from "@/core/ledger/sha256-chain";
 import { tehranDayKey } from "./ingest-service";
 import { leagueAverageGoals, findTeamStat } from "./feed-gatherer";
 import { setSetting, getSetting } from "./settings";
+import { buildSimHistoryPack, SIM_FORCED } from "./sim-feed";
 
 export const HISTORY_SEEDED_KEY = "historySeededAt";
 
@@ -80,6 +81,7 @@ async function upsertHistoryMatch(m: FeedMatch): Promise<string> {
       homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
       detail: m.detail ?? null, surface: m.surface ?? null, round: m.round ?? null,
       venue: m.venue ?? null,
+      source: m.espnEventId.startsWith("sim-") ? "SIM" : "ESPN",
     },
     update: {
       status: m.status, homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
@@ -89,8 +91,17 @@ async function upsertHistoryMatch(m: FeedMatch): Promise<string> {
   return row.id;
 }
 
-async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[] }> {
+async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[]; standings?: Record<string, TeamStat[]> }> {
   const notes: string[] = [];
+
+  // Offline guarantee: BET_SIM_FORCE=1 skips the network entirely and returns
+  // the deterministic SIM history (with ready-made standings for the engines).
+  if (SIM_FORCED) {
+    const sim = buildSimHistoryPack();
+    return { football: sim.football, tennis: sim.tennis, standings: sim.standings,
+      notes: ["SIM history forced via BET_SIM_FORCE=1 — deterministic simulated fixtures"] };
+  }
+
   // Probe recent past days across ALL leagues, then fill older days for active ones only.
   const probe: FeedMatch[] = [];
   for (const d of FOOTBALL_PROBE_DAYS) {
@@ -105,6 +116,13 @@ async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: Feed
   if (activeLeagues.length === 0) notes.push("No finished football fixtures found in history window");
   const tennis = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
   if (tennis.length === 0) notes.push("No finished tennis fixtures found in history window");
+
+  // Total history outage → SIM history so a fresh install NEVER stays dead.
+  if (football.length === 0 && tennis.length === 0) {
+    const sim = buildSimHistoryPack();
+    notes.push("ESPN history fully unreachable — deterministic SIM history engaged (source=SIM)");
+    return { football: sim.football, tennis: sim.tennis, standings: sim.standings, notes };
+  }
   return { football, tennis, notes };
 }
 
@@ -161,8 +179,9 @@ async function buildCandidates(
     (a, b) => a.startTime.getTime() - b.startTime.getTime(),
   );
   // Pre-fetch REAL closing odds (ESPN pickcenter) for tradable football fixtures.
+  // (skipped in SIM-forced mode: the sim pack already carries reference odds)
   const oddsByEvent = new Map<string, Awaited<ReturnType<typeof fetchFootballSummaryOdds>>>();
-  const needOdds = pack.football
+  const needOdds = SIM_FORCED ? [] : pack.football
     .filter((m) => m.status === "post" && !TOXIC_LEAGUES.has(m.leagueCode))
     .slice(0, MAX_SUMMARY_FETCHES);
   const CHUNK = 6;
@@ -259,11 +278,13 @@ export async function seedHistoricalLedger(opts?: { force?: boolean }): Promise<
   // Standings for EVERY football league present in history (real season tables).
   // No cap: a missing table silently degrades model-vs-market divergence to zero
   // and the fixture can never produce an honest signal.
+  // SIM history ships its own deterministic standings — only network leagues fetch.
   const leagues = [...new Set(pack.football.map((m) => m.leagueCode))];
-  const standings: Record<string, TeamStat[]> = {};
+  const standings: Record<string, TeamStat[]> = { ...(pack.standings ?? {}) };
+  const missing = leagues.filter((lg) => !standings[lg]);
   const SCHUNK = 5;
-  for (let i = 0; i < leagues.length; i += SCHUNK) {
-    await Promise.all(leagues.slice(i, i + SCHUNK).map(async (lg) => {
+  for (let i = 0; i < missing.length; i += SCHUNK) {
+    await Promise.all(missing.slice(i, i + SCHUNK).map(async (lg) => {
       const rows = await fetchFootballStandings(lg);
       if (rows.length) standings[lg] = rows;
     }));

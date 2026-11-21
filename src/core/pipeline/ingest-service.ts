@@ -31,6 +31,7 @@ export function tehranDayKey(d: Date): string {
 }
 
 async function upsertMatch(m: FeedMatch): Promise<string> {
+  const source = m.espnEventId.startsWith("sim-") ? "SIM" : "ESPN";
   const row = await db.match.upsert({
     where: { espnEventId: m.espnEventId },
     create: {
@@ -39,7 +40,7 @@ async function upsertMatch(m: FeedMatch): Promise<string> {
       awayRank: m.awayRank ?? null, startTime: m.startTime, status: m.status,
       homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
       detail: m.detail ?? null, surface: m.surface ?? null, round: m.round ?? null,
-      venue: m.venue ?? null,
+      venue: m.venue ?? null, source,
     },
     update: {
       status: m.status, homeScore: m.homeScore ?? null, awayScore: m.awayScore ?? null,
@@ -280,6 +281,23 @@ async function buildAccas(pack: GatheredPack): Promise<number> {
 export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestSummary> {
   const pack = opts?.feed ?? await gatherFeed();
   const all = [...pack.football, ...pack.tennis];
+
+  // Housekeeping: drop stale SIM fixtures that never received a signal —
+  // expired kickoffs (pre-in-past) and old finished sims keep the board clean.
+  // Matches WITH signals are ledger history and are never deleted.
+  await db.match.deleteMany({
+    where: {
+      source: "SIM", status: "pre", signals: { none: {} },
+      startTime: { lt: new Date(Date.now() - 12 * 3600_000) },
+    },
+  });
+  await db.match.deleteMany({
+    where: {
+      source: "SIM", signals: { none: {} },
+      startTime: { lt: new Date(Date.now() - 21 * 86400_000) },
+    },
+  });
+
   const idByEspn = new Map<string, { id: string; sport: string }>();
   for (const m of all) {
     idByEspn.set(m.espnEventId, { id: await upsertMatch(m), sport: m.sport });
