@@ -284,7 +284,12 @@ export async function fetchTennisFeed(): Promise<FeedMatch[]> {
  * The Odds API v4 — real 1xBet + Pinnacle prices when the user configures a key.
  * Returns a name-keyed map of decimal prices. Never throws; may be empty.
  */
-export interface LiveOddsRow { book: "1XBET_LIVE" | "PINNACLE"; home?: number; away?: number; draw?: number }
+export interface LiveOddsRow {
+  book: "1XBET_LIVE" | "PINNACLE";
+  home?: number; away?: number; draw?: number;
+  /** Raw book-side names (tennis unordered matching). */
+  homeName?: string; awayName?: string;
+}
 
 /**
  * The Odds API v4 unified fetcher (v2.5) — REAL 1xBet + Pinnacle prices for
@@ -316,6 +321,7 @@ export async function fetchLive1xBetOdds(apiKey: string | null): Promise<Map<str
 
   for (const pack of packs) {
     if (pack.status !== "fulfilled") continue;
+    const isTennis = pack.value.sp.startsWith("tennis_");
     for (const ev of pack.value.events) {
       const home = (ev.home_team as string) ?? "";
       const away = (ev.away_team as string) ?? "";
@@ -333,7 +339,15 @@ export async function fetchLive1xBetOdds(apiKey: string | null): Promise<Map<str
             else if (n === "draw") row.draw = p;
           }
         }
-        if (row.home && row.away) out.set(`${norm(home)}|${norm(away)}|${key}`, row);
+        if (!(row.home && row.away)) continue;
+        if (isTennis) {
+          // Tennis pairings/orders differ between ESPN and the book — index
+          // under the SORTED name pair so the selector matches either order.
+          const pair = [norm(home), norm(away)].sort().join("|");
+          out.set(`${pair}|${key}`, { ...row, homeName: home, awayName: away });
+        } else {
+          out.set(`${norm(home)}|${norm(away)}|${key}`, row);
+        }
       }
     }
   }

@@ -29,10 +29,6 @@ const ANCHOR_PRICE_MIN = 1.34;
 const ANCHOR_PRICE_MAX = 1.5;
 const TOP_RANK = 100;
 
-/** Normalized name key — mirrors the odds-feed map keys. */
-export const tennisOddsKey = (home: string, away: string) =>
-  `${home.toLowerCase().replace(/[^a-z]/g, "")}|${away.toLowerCase().replace(/[^a-z]/g, "")}`;
-
 /** Build every whitelisted quote for one tennis fixture. */
 export function buildTennisQuotes(
   match: MatchContext,
@@ -70,30 +66,41 @@ export function buildTennisQuotes(
   }
 
   // v2.5 — attach REAL 1xBet (preferred) or Pinnacle winner prices when the
-  // live feed carries this matchup. The 2-way de-vig gives the market truth.
+  // live feed carries this matchup. Matching is ORDER-INDEPENDENT: ESPN and
+  // the book may disagree on who is "home", so the pair key is name-sorted
+  // and prices are re-aligned to ESPN's home/away by comparing player names.
   if (liveOdds) {
-    const key = tennisOddsKey(match.homeName, match.awayName);
-    const row = liveOdds.get(`${key}|1XBET_LIVE`) ?? liveOdds.get(`${key}|PINNACLE`);
+    const normName = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+    const nh = normName(match.homeName);
+    const na = normName(match.awayName);
+    const pair = [nh, na].sort().join("|");
+    const row = liveOdds.get(`${pair}|1XBET_LIVE`) ?? liveOdds.get(`${pair}|PINNACLE`);
     if (row?.home && row?.away && row.home > 1.01 && row.away > 1.01) {
-      const fair = devigTwoWay(row.home, row.away);
-      const pH = fair.over; // first input (home) fair probability
-      const pA = fair.under;
-      const liveWinner: TennisQuote = {
-        marketKey: "winner", selection: "HOME",
-        modelProb: res.probs["winner@HOME"] ?? consensus.probs["winner@HOME"] ?? pH,
-        trueProb: pH, price: row.home, source: "LIVE",
-      };
-      const liveAway: TennisQuote = {
-        marketKey: "winner", selection: "AWAY",
-        modelProb: res.probs["winner@AWAY"] ?? consensus.probs["winner@AWAY"] ?? pA,
-        trueProb: pA, price: row.away, source: "LIVE",
-      };
-      // LIVE rows replace their ESTIMATE twin so provenance stays honest.
-      const filtered = quotes.filter(
-        (q) => !(q.marketKey === "winner" && (q.selection === "HOME" || q.selection === "AWAY")),
-      );
-      quotes.length = 0;
-      quotes.push(...filtered, liveWinner, liveAway);
+      // Re-align book prices to THIS fixture's home/away sides.
+      const bookHome = normName(row.homeName ?? "");
+      const priceForHome = bookHome && bookHome === nh ? row.home : row.away;
+      const priceForAway = priceForHome === row.home ? row.away : row.home;
+      if (priceForHome > 1.01 && priceForAway > 1.01) {
+        const fair = devigTwoWay(priceForHome, priceForAway);
+        const pH = fair.over; // first input (home) fair probability
+        const pA = fair.under;
+        const liveWinner: TennisQuote = {
+          marketKey: "winner", selection: "HOME",
+          modelProb: res.probs["winner@HOME"] ?? consensus.probs["winner@HOME"] ?? pH,
+          trueProb: pH, price: priceForHome, source: "LIVE",
+        };
+        const liveAway: TennisQuote = {
+          marketKey: "winner", selection: "AWAY",
+          modelProb: res.probs["winner@AWAY"] ?? consensus.probs["winner@AWAY"] ?? pA,
+          trueProb: pA, price: priceForAway, source: "LIVE",
+        };
+        // LIVE rows replace their ESTIMATE twin so provenance stays honest.
+        const filtered = quotes.filter(
+          (q) => !(q.marketKey === "winner" && (q.selection === "HOME" || q.selection === "AWAY")),
+        );
+        quotes.length = 0;
+        quotes.push(...filtered, liveWinner, liveAway);
+      }
     }
   }
 
