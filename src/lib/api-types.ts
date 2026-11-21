@@ -199,7 +199,7 @@ export const statusColor = (status: string): string =>
 export function fmtDateTimeFa(iso: string | null | undefined, withTime = true): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return "—";
+  if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2020) return "—";
   try {
     const date = d.toLocaleDateString("fa-IR", { year: "numeric", month: "2-digit", day: "2-digit" });
     const time = d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });

@@ -17,7 +17,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState, TeamAvatar, AnimatedNumber, HashChip } from "@/components/shared/primitives";
-import { lineLabel, statusColor, fmtPrice, fmtUnits, fmtDateTimeFa } from "@/lib/api-types";
+import { lineLabel, statusColor, fmtPrice, fmtUnits } from "@/lib/api-types";
+import { formatSafeDateTime } from "@/lib/format";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
 import { officialBetLine } from "@/lib/markets";
 import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert } from "lucide-react";
@@ -491,11 +492,11 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     </div>
                     <div>
                       <span className="text-muted-foreground">زمان قفل پیش‌ازبازی:</span>{" "}
-                      <span className="num text-violet-300">{fmtDateTimeFa(s.lockedAt)}</span>
+                      <span className="num text-violet-300" dir="ltr">{formatSafeDateTime(s.lockedAt)}</span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">زمان تسویه:</span>{" "}
-                      <span className="num text-cyan-300">{fmtDateTimeFa(s.settledAt)}</span>
+                      <span className="num text-cyan-300" dir="ltr">{formatSafeDateTime(s.settledAt)}</span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">EV:</span>{" "}
@@ -659,7 +660,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                           {badge.text}
                         </span>
                       </td>
-                      <td className="num whitespace-nowrap px-2 py-2 text-slate-400">{fmtDateTimeFa(v.decidedAt)}</td>
+                      <td className="num whitespace-nowrap px-2 py-2 text-slate-400" dir="ltr">{formatSafeDateTime(v.decidedAt)}</td>
                     </tr>
                   );
                 })}
@@ -693,8 +694,8 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                 <span className="num" dir="ltr">{fmtUnits(verify.stake, 0)}u</span>
               </div>
               <div className="text-[10px] text-slate-400">
-                زمان قفل پیش‌ازبازی: <span className="num text-violet-300">{fmtDateTimeFa(verify.lockedAt)}</span> · زمان تسویه:{" "}
-                <span className="num text-cyan-300">{fmtDateTimeFa(verify.settledAt)}</span>
+                زمان قفل پیش‌ازبازی: <span className="num text-violet-300" dir="ltr">{formatSafeDateTime(verify.lockedAt)}</span> · زمان تسویه:{" "}
+                <span className="num text-cyan-300" dir="ltr">{formatSafeDateTime(verify.settledAt)}</span>
               </div>
               <div className="rounded-lg border border-slate-800 bg-secondary/40 p-2 text-[10px] leading-5 text-slate-300">
                 زنجیره: هر گره شامل prevHash گره قبلی است — دستکاری هر ردیف زنجیره ممیزی را می‌شکند.

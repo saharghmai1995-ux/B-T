@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { fmtDateTimeFa } from "@/lib/api-types";
+import { formatSafeDateTime } from "@/lib/format";
 import type { AppMatch } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -211,7 +211,7 @@ export function Court3D({ matches }: { matches: AppMatch[] }) {
                 </span>
               )}
               <span className="rounded-md border border-slate-700 bg-secondary/50 px-2 py-0.5 text-slate-400">
-                🕐 <span dir="ltr" className="num">{fmtDateTimeFa(match.startTime)}</span>
+                🕐 <span dir="ltr" className="num">{formatSafeDateTime(match.startTime)}</span>
               </span>
               {match.venue && (
                 <span className="rounded-md border border-slate-700 bg-secondary/50 px-2 py-0.5 text-slate-400">

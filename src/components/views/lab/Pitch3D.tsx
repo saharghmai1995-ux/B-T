@@ -9,7 +9,7 @@
 
 import { Fragment, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { fmtDateTimeFa } from "@/lib/api-types";
+import { formatSafeDateTime } from "@/lib/format";
 import type { AppMatch } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -249,7 +249,7 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
             {scoreHome ?? "—"} : {scoreAway ?? "—"}
           </span>
           <span className="text-[10px] text-slate-400">
-            🕐 <span dir="ltr" className="num">{fmtDateTimeFa(match.startTime)}</span>
+            🕐 <span dir="ltr" className="num">{formatSafeDateTime(match.startTime)}</span>
           </span>
           <span className="text-[10px] text-slate-400">🏟️ {match.venue ?? "—"}</span>
           <span className="text-[10px] text-slate-400">
