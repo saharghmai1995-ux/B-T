@@ -33,3 +33,21 @@ export function formatSafeDate(input?: string | number | Date | null): string {
     day: "2-digit",
   }).format(d);
 }
+
+/**
+ * v2.7 — Pick of the Day gate: strictly matches TODAY in Asia/Tehran.
+ * The comparison uses the en-CA YYYY-MM-DD locale output on both sides so
+ * every browser engine agrees on what "today" means for the golden card.
+ */
+export function isSameTehranDay(isoDate: string | number | Date | null | undefined, now: Date = new Date()): boolean {
+  if (!isoDate) return false;
+  const d = isoDate instanceof Date ? isoDate : new Date(isoDate);
+  if (isNaN(d.getTime()) || d.getFullYear() < 2020) return false;
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(d) === fmt.format(now);
+}

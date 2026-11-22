@@ -211,9 +211,16 @@ export function fmtDateTimeFa(iso: string | null | undefined, withTime = true): 
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2020) return "—";
   try {
-    const date = d.toLocaleDateString("fa-IR", { year: "numeric", month: "2-digit", day: "2-digit" });
-    const time = d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    return withTime ? `${date} ،${time}` : date;
+    // v2.7 — Latin (en-GB) date/time with Tehran timezone. Persian-calendar
+    // digits printed `0000/00/00`-class glitches on some browser stacks;
+    // the Latin format is stable on every engine, forever.
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Tehran",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      ...(withTime ? { hour: "2-digit", minute: "2-digit", hour12: false } : {}),
+    }).format(d);
   } catch {
     return "—";
   }

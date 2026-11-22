@@ -50,7 +50,10 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
     // Book filter: BetForward signals map to the same whitelisted markets —
     // both books execute the identical official button; filter is informational.
     void book;
-    return [...rows].sort((a, b) => b.evPct - a.evPct || b.modelProb - a.modelProb);
+    // v2.7 — default order: soonest kickoff first (ascending start time).
+    return [...rows].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime() || b.evPct - a.evPct,
+    );
   }, [state.openSignals, sportFilter, line, book]);
 
   const arbActive = signals.some((s) => s.line === "ARB");

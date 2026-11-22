@@ -40,6 +40,7 @@ import {
 } from "@/components/shared/primitives";
 import { useAppStore } from "@/lib/store";
 import { fmtUnits, fmtDateTimeFa, lineLabel, statusColor } from "@/lib/api-types";
+import { isSameTehranDay } from "@/lib/format";
 import type { AppStatePayload, AppSignal } from "@/lib/api-types";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import { cn } from "@/lib/utils";
@@ -94,9 +95,11 @@ function filterSeries<T extends { date: string }>(rows: T[], range: RangeKey): T
 }
 
 function pickBestToday(open: AppSignal[]): AppSignal | null {
-  const today = new Date().toISOString().slice(0, 10);
-  const todays = open.filter((s) => s.dayKey === today);
-  if (todays.length === 0) return open[0] ?? null;
+  // v2.7 — strictly TODAY (Asia/Tehran) on the kickoff clock. No dayKey
+  // fallback, no "closest signal" leaking in: when nothing starts today the
+  // golden card honestly shows its empty state.
+  const todays = open.filter((s) => isSameTehranDay(s.startTime));
+  if (todays.length === 0) return null;
   return todays.reduce((best, s) => (s.evPct > best.evPct ? s : best), todays[0]);
 }
 
@@ -692,8 +695,8 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
               </div>
               <EmptyState
                 icon="🛰️"
-                title="امروز هنوز سیگنال +EV صادر نشده"
-                sub="رادار بازار فعال است؛ اولین شات ارزشمند بلافاصله در همین کارت هولوگرافیک نمایش داده می‌شود."
+                title="امروز سیگنال طلایی فعال نیست"
+                sub="نزدیک‌ترین سیگنال‌های +EV در مرکز سیگنال‌ها در دسترس است — کارت طلایی فقط سیگنال‌های امروز تهران را نشان می‌دهد."
               />
             </Card>
           )}
