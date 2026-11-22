@@ -155,7 +155,7 @@ const EDU_TOPICS: EduTopic[] = [
     index: "01",
     accent: CYAN,
     fa: "مدیریت سرمایه با معیار کلِی",
-    enTag: "KELLY CRITERION",
+    enTag: "KELLY CRITERION (0.25x FRACTIONAL)",
     en: "The Kelly Criterion sizes every stake to maximise long-run bankroll growth instead of raw win count. Full Kelly is aggressive, so our engine bets fractional Kelly (25% of the optimal fraction): stake = (p x odds - 1) / (odds - 1), then a hard ceiling of 5 units per play. The maths survives variance — and so does your bankroll.",
     faBody: "کلِی نسبت شرط را طوری تعیین می‌کند که رشد بلندمدت سرمایه بیشینه شود، نه تعداد برد ظاهری. ما ۲۵٪ کسرشدهٔ کلِی با سقف سخت ۵ واحد شرط می‌بندیم تا یک رشتهٔ باخت، حساب را نابود نکند.",
   },
@@ -164,7 +164,7 @@ const EDU_TOPICS: EduTopic[] = [
     index: "02",
     accent: EMERALD,
     fa: "حذف کارمزد بوک‌میکر با روش شین",
-    enTag: "SHIN DE-VIG",
+    enTag: "SHIN DE-VIG & TRUE PROBABILITY",
     en: "Bookmaker prices hide a silent tax: the overround. The Shin method (1998) assumes insider trading creates that margin and solves for the true implied probabilities, de-vigging far more accurately than naive normalisation. Every price we compare starts as a Shin-cleaned probability before our model fights the book.",
     faBody: "ضرایب بوک‌میکر حاشیهٔ پنهان دارند که مالیات پشت‌پردهٔ هر شرط است. روش شین با فرض معامله‌گران آگاه این حاشیه را حل می‌کند و احتمال واقعی را دقیق‌تر از تقسیم ساده استخراج می‌کند.",
   },
@@ -173,7 +173,7 @@ const EDU_TOPICS: EduTopic[] = [
     index: "03",
     accent: GOLD,
     fa: "ارزش خط پایانی (CLV) چیست",
-    enTag: "CLOSING LINE VALUE",
+    enTag: "CLOSING LINE VALUE (CLV)",
     en: "Closing Line Value asks one question: did you beat the market? Compare the price you locked pre-match against the final closing line seconds before kickoff. Consistently positive CLV proves your model finds value before the sharpest money does — the single most predictive KPI of long-term profit, far more reliable than short-term win rate.",
     faBody: "CLV یعنی آیا از خط پایانی بازار بهتر شرط بستید یا نه. CLV مثبتِ پایدار، پیش‌بین‌ترین شاخص سود بلندمدت است و از برد و باخت کوتاه‌مدت معنادارتر است.",
   },
@@ -182,9 +182,81 @@ const EDU_TOPICS: EduTopic[] = [
     index: "04",
     accent: VIOLET,
     fa: "دیکسون-کولز در برابر زنجیره مارکوف",
-    enTag: "DIXON-COLES VS MARKOV",
+    enTag: "DIXON-COLES POISSON MODELING",
     en: "Dixon-Coles models football scores with Poisson attack/defence rates plus a low-score correction term, excelling on full-season data. The Markov-chain engine instead tracks in-play state transitions and shines for live trading. We run both: Dixon-Coles for pre-match value, Markov as the live sanity check — their disagreement is itself a signal.",
     faBody: "دیکسون-کولز گل‌ها را با نرخ حمله و دفاع پواسون و تصحیح نتایج کم‌گل مدل می‌کند؛ زنجیرهٔ مارکوف گذارهای لحظه‌ای بازی را دنبال می‌گیرد. ما هر دو را اجرا می‌کنیم و اختلافشان خودش یک سیگنال است.",
+  },
+  {
+    id: "ev",
+    index: "05",
+    accent: CYAN,
+    fa: "ریاضیات ارزش مورد انتظار (+EV)",
+    enTag: "EXPECTED VALUE (+EV) MATHEMATICS",
+    en: "Expected Value is the north star: EV = (model probability x decimal odds) - 1. A price only becomes a signal when the model probability beats the market's implied probability by enough that the price still pays. Our production gate demands EV >= +4% on LIVE book prices and >= +4.5% on model estimates — below that, the 'edge' is noise, not value.",
+    faBody: "EV یعنی (احتمال مدل × ضریب اعشاری) − ۱. فقط وقتی احتمال مدل از احتمال ضمنی بازار به‌اندازهٔ کافی بیشتر باشد، قیمت ارزش دارد. دروازهٔ تولید ما EV ≥ +۴٪ روی ضرایب زنده است؛ کمتر از آن نویز است نه ارزش.",
+  },
+  {
+    id: "ah-dnb",
+    index: "06",
+    accent: EMERALD,
+    fa: "هندیکپ آسیایی صفر در برابر برد بدون مساوی",
+    enTag: "ASIAN HANDICAP (0.0) VS DRAW NO BET",
+    en: "Asian Handicap 0.0 and Draw No Bet look identical — stake refunded on a draw — but they differ in mechanics and availability. AH 0.0 splits settlement across books with void logic, while DNB is a clean 1X2 derivative. Knowing which market carries the better price for the SAME probability is free edge: same risk, different number.",
+    faBody: "AH 0.0 و DNB هر دو در تساوی برگشت سرمایه دارند اما مکانیک و قیمت‌شان متفاوت است. یافتن اینکه کدام مارکت برای همان احتمال ضریب بهتری می‌دهد، یک لبهٔ رایگان است: ریسک یکسان، عدد متفاوت.",
+  },
+  {
+    id: "variance",
+    index: "07",
+    accent: GOLD,
+    fa: "واریانس، رشته‌های سرد و کنترل افت سرمایه",
+    enTag: "VARIANCE, COLD STREAKS & DRAWDOWN CONTROL",
+    en: "Even a genuine 55% edge loses 45% of the time — a 10-bet cold streak happens to every profitable bettor every season. Drawdown control is architectural: quarter-Kelly stakes keep single-bet exposure tiny, unit accounting flattens variance into a curve you can survive, and no result ever changes the sizing rule. Emotion is not an input.",
+    faBody: "حتی لبهٔ واقعی ۵۵٪ هم ۴۵٪ می‌بازد؛ رشتهٔ ۱۰باختی برای هر شرط‌بند سوددِه اتفاق می‌افتد. کنترل افت سرمایه معماری است: استیک کلِی‌چهارم، حساب واحدی، و قانون ثابت اندازه — هیجان هرگز ورودی نیست.",
+  },
+  {
+    id: "vig",
+    index: "08",
+    accent: VIOLET,
+    fa: "حاشیه بوک‌میکر (اورراند) چقدر است",
+    enTag: "BOOKMAKER MARGIN (OVERROUND / VIG)",
+    en: "Sum the implied probabilities of a 1X2 book: it always exceeds 100%. That excess is the vig — the book's built-in tax, typically 5-8% on football. Pinnacle often runs the lowest margin (~2-4%), which is why its line is treated as the market consensus. Beating a high-vig book means your model must first overcome the tax before finding value.",
+    faBody: "مجموع احتمال‌های ضمنی یک کتاب 1X2 همیشه بیش از ۱۰۰٪ است؛ همین اضافه «ویگ» است — مالیات داخلی بوک‌میکر. خط پیناکل با کمترین حاشیه مرجع بازار است؛ مدل ما باید اول از این مالیات عبور کند تا ارزش پیدا شود.",
+  },
+  {
+    id: "sharp",
+    index: "09",
+    accent: CYAN,
+    fa: "حرکت خط و پول پیناکل (شارپ مانی)",
+    enTag: "LINE MOVEMENT & SHARP MONEY (PINNACLE)",
+    en: "Lines move because sharp money arrives. Pinnacle's closing line is the most efficient public number in sport, so line movement toward your side before kickoff is a validation signal — and drift against you is a warning. We snapshot the live price at lock time so every card can be audited against what the sharp market did next.",
+    faBody: "خط‌ها به‌خاطر پول شارپ حرکت می‌کنند. خط پایانی پیناکل کارآمدترین عدد عمومی ورزش است؛ حرکت خط به سمت شما پیش از شروع، تأییدیه است و حرکت معکوس، هشدار. ما ضریب لحظهٔ قفل را ثبت می‌کنیم تا هر کارت قابل ممیزی باشد.",
+  },
+  {
+    id: "shadow",
+    index: "10",
+    accent: EMERALD,
+    fa: "دفتر سایه و انضباط وتوی پیش‌ازبازی",
+    enTag: "SHADOW LEDGER & PRE-MATCH VETO DISCIPLINE",
+    en: "The Shadow Ledger archives every signal the supervisor layer refused to let reach the bank — with the REAL fixture, the REAL final score and an honest signed verdict: SAVED LOSS when the pick would have lost, MISSED WIN when it would have won. The net impact proves whether the veto layer adds value or just subtracts opportunity.",
+    faBody: "دفتر سایه آرشیو هر سیگنالی است که لایه ناظر اجازهٔ رسیدن به بانک را نداد — با مسابقه واقعی، نتیجه واقعی و برچسب صادق: SAVED LOSS یا MISSED WIN. برآیند خالص نشان می‌دهد وتو ارزش می‌آفریند یا فقط فرصت حذف می‌کند.",
+  },
+  {
+    id: "markov",
+    index: "11",
+    accent: GOLD,
+    fa: "زنجیره مارکوف تنیس و احتمال حفظ سرویس",
+    enTag: "TENNIS MARKOV CHAINS & SERVE HOLD PROBABILITY",
+    en: "Tennis is a chain of serve points: model each player's hold probability from rank, surface and recent form, then propagate the state machine point-by-point through games and sets. The result is a full probability distribution over every scoreline — which is how our engine prices winner markets and spots saturated books that forgot a surface shift.",
+    faBody: "تنیس زنجیره‌ای از سرویس‌هاست: احتمال حفظ سرویس هر بازیکن از رنکینگ، سطح و فرم مدل می‌شود و ماشین حالت نقطه‌به‌نقطه تا ست‌ها پیش می‌رود. خروجی، توزیع کامل اسکورلاین‌ها است — همان چیزی که مارکت برنده را قیمت‌گذاری می‌کند.",
+  },
+  {
+    id: "surface-elo",
+    index: "12",
+    accent: VIOLET,
+    fa: "الوی سطح و مدل خستگی در ATP/WTA",
+    enTag: "SURFACE ELO & FATIGUE MODELING IN ATP/WTA",
+    en: "A clay-court rating and a hard-court rating are two different players. Surface Elo splits each athlete's strength per surface and decays with inactivity; fatigue adds match load — long three-set battles and back-to-back days compress hold probabilities measurably. Our Markov engine blends both so a tired favourite on the wrong surface is never priced as fresh.",
+    faBody: "رنکینگ روی خاک و سخت دو بازیکن متفاوت است. الوی سطح قدرت هر بازیکن را به تفکیک سطح مدل و با افت زمانی تنظیم می‌کند و خستگی (بازی‌های سه‌ستهای پشت‌سرهم) احتمال حفظ سرویس را واقعاً کم می‌کند — فاوریت خسته روی سطح اشتباه هرگز تازه قیمت‌گذاری نمی‌شود.",
   },
 ];
 
@@ -1459,15 +1531,16 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                 <div
                   key={t.id}
                   className={cn(
-                    "rounded-xl border p-2.5 transition-all",
+                    "rounded-xl border p-3 transition-all",
                     open ? "border-violet-500/40 bg-violet-500/5" : "border-slate-800 bg-secondary/40",
                   )}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-bold">{t.fa}</div>
-                      <div className="num text-[10px]" style={{ color: t.accent }}>
-                        {t.enTag}
+                      {/* v2.7 — 22px bold headline per the patch spec */}
+                      <div className="truncate text-[22px] font-bold leading-8">{t.fa}</div>
+                      <div className="num text-[11px] font-bold" style={{ color: t.accent }}>
+                        {t.index} · {t.enTag}
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-1.5">
@@ -1500,13 +1573,17 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                     </div>
                   </div>
                   {open && (
-                    <div className="mt-2 space-y-2 border-t border-slate-800/70 pt-2">
-                      <p dir="ltr" className="text-left text-[11px] leading-5 text-slate-300">
-                        {t.en}
-                      </p>
-                      <p dir="rtl" className="text-[11px] leading-5 text-muted-foreground">
-                        {t.faBody}
-                      </p>
+                    // v2.7 — FA (RTL) and EN (LTR) fully separated panels with
+                    // 15-16px body text and readable line height.
+                    <div className="mt-2 grid grid-cols-1 gap-2 border-t border-slate-800/70 pt-3 md:grid-cols-2">
+                      <div dir="rtl" className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3">
+                        <div className="mb-1 text-[10px] font-bold text-violet-300">فارسی — نسخهٔ کپشن تلگرام</div>
+                        <p className="text-[16px] leading-7 text-slate-100">{t.faBody}</p>
+                      </div>
+                      <div dir="ltr" className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3 text-left">
+                        <div className="mb-1 text-[10px] font-bold text-cyan-300">ENGLISH — POSTER / CHANNEL TEXT</div>
+                        <p className="text-[15px] leading-6 text-slate-200">{t.en}</p>
+                      </div>
                     </div>
                   )}
                 </div>
