@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import sharp from "sharp";
 import { db } from "@/lib/db";
 import { renderPosterSvg, type PosterKind, type PosterSpec } from "@/core/telegram/poster-renderer";
+import { formatOfficialBookmakerMarket, cleanSelectionLabel } from "@/core/bookmakers/market-aliases";
 import { resolveBroadcastTarget, type BroadcastChannel } from "@/core/pipeline/settings";
 import { sendPhotoTo } from "@/core/telegram/bot-client";
 
@@ -103,13 +104,16 @@ async function buildSpec(body: TelegramBody): Promise<{ spec: PosterSpec; logosM
       },
     });
     if (s) {
+      // v2.7.1 §1 — official bookmaker market name + REAL team name on every
+      // poster (raw `◆` / HOME/AAY formats are retired everywhere).
+      const clean = formatOfficialBookmakerMarket(s.marketKey, s.selection, s.match.homeName, s.match.awayName);
       base.matchInfo = `${s.match.homeName} vs ${s.match.awayName}`;
       base.homeName = s.match.homeName;
       base.awayName = s.match.awayName;
       base.competition = s.match.league;
       base.sport = s.match.sport as "football" | "tennis";
-      base.marketLabel = s.marketLabel;
-      base.selection = s.selection;
+      base.marketLabel = clean.posterLabel;
+      base.selection = cleanSelectionLabel(s.marketKey, s.selection, s.match.homeName, s.match.awayName);
       base.price = s.price;
       base.evPct = s.evPct;
       base.prob = s.modelProb * 100;

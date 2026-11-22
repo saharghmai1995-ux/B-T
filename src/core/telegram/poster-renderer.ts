@@ -103,7 +103,7 @@ export function renderPosterSvg(spec: PosterSpec): string {
   // pattern vs tennis seams), driven by spec.sport.
   const ballSvg = (() => {
     const bx = 540;
-    const by = 246;
+    const by = 209; // v2.7.1 — face-off zone starts exactly at y=185 (ball top edge)
     if (spec.sport === "tennis") {
       return `
   <g>
@@ -130,14 +130,16 @@ export function renderPosterSvg(spec: PosterSpec): string {
   </g>`;
   })();
 
-  // v2.7 — BIG status badge top-center (42px, 900 weight, colored box).
+  // v2.7.1 hotfix §2.1 — the status badge lives on its own DEDICATED centered
+  // row at y=112 (rect 88–136). It never touches the brand row (y=52) or the
+  // tag row (y=84) again — zero text overlap on the 1080x1350 canvas.
   const badgeText = spec.kind === "SIGNAL" ? "NEW SIGNAL" : spec.kind === "WIN" ? "WON" : spec.kind === "LOSS" ? "LOST" : "NEWS";
   const badgeColor = spec.kind === "SIGNAL" ? "#22D3EE" : spec.kind === "WIN" ? "#10B981" : spec.kind === "LOSS" ? "#F43F5E" : "#F59E0B";
-  const badgeWidth = badgeText.length * 30 + 72;
+  const badgeWidth = badgeText.length * 22 + 56;
   const badgeSvg = `
   <g>
-    <rect x="${540 - badgeWidth / 2}" y="62" width="${badgeWidth}" height="66" rx="33" fill="${badgeColor}" fill-opacity="0.14" stroke="${badgeColor}" stroke-width="3.5"/>
-    <text x="540" y="109" text-anchor="middle" font-family="Arial" font-size="42" font-weight="900" fill="${badgeColor}">${esc(badgeText)}</text>
+    <rect x="${540 - badgeWidth / 2}" y="88" width="${badgeWidth}" height="48" rx="24" fill="${badgeColor}" fill-opacity="0.14" stroke="${badgeColor}" stroke-width="3"/>
+    <text x="540" y="120" text-anchor="middle" font-family="Arial" font-size="30" font-weight="900" fill="${badgeColor}" letter-spacing="2">${esc(badgeText)}</text>
   </g>`;
 
   const infoBarY = 1015;
@@ -150,22 +152,22 @@ export function renderPosterSvg(spec: PosterSpec): string {
   }).join("");
 
   const marketBlock = spec.kind === "NEWS"
-    ? `<text x="72" y="470" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">LIVE REPORT — ESPN NEWS WIRE</text>
-       <rect x="72" y="500" width="936" height="330" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
-       <foreignObject x="100" y="522" width="880" height="290">
+    ? `<text x="72" y="530" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">LIVE REPORT — ESPN NEWS WIRE</text>
+       <rect x="72" y="552" width="936" height="330" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
+       <foreignObject x="100" y="574" width="880" height="290">
          <div xmlns="http://www.w3.org/1999/xhtml" style="color:#FFFFFF;font-family:Arial;font-size:40px;font-weight:800;line-height:1.25;">${esc((spec.headline ?? "Sports headline").slice(0, 130))}</div>
        </foreignObject>`
-    : `<text x="72" y="470" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">OFFICIAL 1xBET MARKET — ${esc((spec.competition ?? "").slice(0, 34))}</text>
-       <rect x="72" y="500" width="936" height="120" rx="60" fill="#061620" stroke="${th.beam}" stroke-width="3"/>
-       <text x="540" y="575" text-anchor="middle" font-family="Arial" font-size="44" font-weight="800" fill="#FFFFFF">${esc((spec.marketLabel ?? "Market pending").slice(0, 46))}</text>
-       <text x="72" y="680" font-family="Arial" font-size="46" font-weight="800" fill="${th.accent}">${esc((spec.selection ?? "—").slice(0, 50))}</text>
-       <rect x="72" y="720" width="452" height="200" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
-       <text x="96" y="776" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">ODDS (DECIMAL)</text>
-       <text x="96" y="878" font-family="Arial" font-size="84" font-weight="800" fill="#FFFFFF">${fmt(spec.price)}</text>
-       <rect x="556" y="720" width="452" height="200" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
-       <text x="580" y="776" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">${spec.kind === "SIGNAL" ? "EDGE (+EV) · STAKE" : spec.kind === "WIN" ? "PROFIT UNITS" : "RESULT UNITS"}</text>
-       <text x="580" y="878" font-family="Arial" font-size="84" font-weight="800" fill="${th.accent}">${spec.kind === "SIGNAL" ? `+${fmt(spec.evPct, 1)}%` : spec.kind === "WIN" ? `+${fmt(spec.netProfit, 1)}u` : spec.kind === "LOSS" ? `${fmt(spec.netProfit, 1)}u` : "—"}</text>
-       <text x="72" y="965" font-family="Arial" font-size="28" fill="#8FA3BF">Model probability ${fmt(spec.prob, 1)}%   ·   Stake ${fmt(spec.stake, 0)}u   ·   Settlement 90m Regular Time</text>`;
+    : `<text x="72" y="530" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">OFFICIAL 1xBET MARKET — ${esc((spec.competition ?? "").slice(0, 34))}</text>
+       <rect x="72" y="552" width="936" height="112" rx="56" fill="#061620" stroke="${th.beam}" stroke-width="3"/>
+       <text x="540" y="622" text-anchor="middle" font-family="Arial" font-size="42" font-weight="800" fill="#FFFFFF">${esc((spec.marketLabel ?? "Market pending").slice(0, 46))}</text>
+       <text x="72" y="688" font-family="Arial" font-size="46" font-weight="800" fill="${th.accent}">${esc((spec.selection ?? "—").slice(0, 50))}</text>
+       <rect x="72" y="712" width="452" height="218" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
+       <text x="96" y="764" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">ODDS (DECIMAL)</text>
+       <text x="96" y="886" font-family="Arial" font-size="84" font-weight="800" fill="#FFFFFF">${fmt(spec.price)}</text>
+       <rect x="556" y="712" width="452" height="218" rx="24" fill="#0B1220" stroke="#1E2A3D"/>
+       <text x="580" y="764" font-family="Arial" font-size="26" fill="#8FA3BF" letter-spacing="2">${spec.kind === "SIGNAL" ? "EDGE (+EV) · STAKE" : spec.kind === "WIN" ? "PROFIT UNITS" : "RESULT UNITS"}</text>
+       <text x="580" y="886" font-family="Arial" font-size="84" font-weight="800" fill="${th.accent}">${spec.kind === "SIGNAL" ? `+${fmt(spec.evPct, 1)}%` : spec.kind === "WIN" ? `+${fmt(spec.netProfit, 1)}u` : spec.kind === "LOSS" ? `${fmt(spec.netProfit, 1)}u` : "—"}</text>
+       <text x="72" y="968" font-family="Arial" font-size="28" fill="#8FA3BF">Model probability ${fmt(spec.prob, 1)}%   ·   Stake ${fmt(spec.stake, 0)}u   ·   Settlement 90m Regular Time</text>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <defs>
@@ -193,22 +195,23 @@ export function renderPosterSvg(spec: PosterSpec): string {
 
   <!-- top chrome -->
   <rect x="0" y="0" width="${W}" height="10" fill="${th.accent}"/>
-  <text x="72" y="96" font-family="Arial" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="2">NEOBET QUANT PRO</text>
-  <text x="1008" y="96" text-anchor="end" font-family="Arial" font-size="30" font-weight="700" fill="${th.accent}" letter-spacing="2">@aineobet</text>
-  <text x="72" y="140" font-family="Arial" font-size="24" fill="#8FA3BF" letter-spacing="5">${esc(th.tag)}</text>
+  <!-- v2.7.1 layout: brand y=52 → tag y=84 → dedicated status row y=112 -->
+  <text x="72" y="52" font-family="Arial" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="2">NEOBET QUANT PRO</text>
+  <text x="1008" y="52" text-anchor="end" font-family="Arial" font-size="30" font-weight="700" fill="${th.accent}" letter-spacing="2">@aineobet</text>
+  <text x="72" y="84" font-family="Arial" font-size="24" fill="#8FA3BF" letter-spacing="5">${esc(th.tag)}</text>
   ${badgeSvg}
 
-  <!-- face-off zone -->
+  <!-- face-off zone (league + logos start at y=185 per hotfix §2.1) -->
   ${ballSvg}
-  ${monogram(home, 262, 328)}
-  ${monogram(away, 818, 328)}
-  <circle cx="540" cy="318" r="40" fill="#0B1220" stroke="#1E2A3D"/>
-  <circle cx="540" cy="318" r="16" fill="none" stroke="#FFFFFF" stroke-width="3"/>
-  <line x1="540" y1="302" x2="540" y2="334" stroke="#FFFFFF" stroke-width="3"/>
-  <line x1="524" y1="318" x2="556" y2="318" stroke="#FFFFFF" stroke-width="3"/>
-  <text x="540" y="446" text-anchor="middle" font-family="Arial" font-size="64" font-weight="800" fill="url(#metal)" letter-spacing="6">VS</text>
-  <text x="262" y="482" text-anchor="middle" font-family="Arial" font-size="34" font-weight="700" fill="#FFFFFF">${esc(home.slice(0, 22))}</text>
-  <text x="818" y="482" text-anchor="middle" font-family="Arial" font-size="34" font-weight="700" fill="#FFFFFF">${esc(away.slice(0, 22))}</text>
+  ${monogram(home, 262, 303)}
+  ${monogram(away, 818, 303)}
+  <circle cx="540" cy="293" r="40" fill="#0B1220" stroke="#1E2A3D"/>
+  <circle cx="540" cy="293" r="16" fill="none" stroke="#FFFFFF" stroke-width="3"/>
+  <line x1="540" y1="277" x2="540" y2="309" stroke="#FFFFFF" stroke-width="3"/>
+  <line x1="524" y1="293" x2="556" y2="293" stroke="#FFFFFF" stroke-width="3"/>
+  <text x="540" y="452" text-anchor="middle" font-family="Arial" font-size="64" font-weight="800" fill="url(#metal)" letter-spacing="6">VS</text>
+  <text x="262" y="490" text-anchor="middle" font-family="Arial" font-size="34" font-weight="700" fill="#FFFFFF">${esc(home.slice(0, 22))}</text>
+  <text x="818" y="490" text-anchor="middle" font-family="Arial" font-size="34" font-weight="700" fill="#FFFFFF">${esc(away.slice(0, 22))}</text>
 
   <!-- market capsule zone -->
   ${marketBlock}

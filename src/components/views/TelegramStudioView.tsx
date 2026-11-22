@@ -1014,7 +1014,8 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
     homeLogo: s.homeLogo,
     awayLogo: s.awayLogo,
     competition: s.league || "NEOBET QUANT LEAGUE",
-    marketEn: officialBetLine(s.marketKey, s.selection, s.marketLabel),
+    // v2.7.1 §1 — official bookmaker naming with the REAL team names.
+    marketEn: officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName),
     marketFa: marketFa(s.marketKey),
     price: s.price,
     evPct: s.evPct,
@@ -1481,6 +1482,8 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                 selectedSignal.marketKey,
                 selectedSignal.selection,
                 selectedSignal.marketLabel,
+                selectedSignal.homeName,
+                selectedSignal.awayName,
               )}{" "}
               @ {fmtPrice(selectedSignal.price)} · EDGE {selectedSignal.evPct.toFixed(1)}% · STAKE{" "}
               {fmtUnits(selectedSignal.stake)}u

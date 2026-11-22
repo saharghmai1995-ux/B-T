@@ -5,7 +5,11 @@
  * Every signal card shows the FULL official English market name exactly as it
  * appears in the 1xBet / BetForward menus, with a short Persian explanation
  * below it. Raw machine codes (ah_away_-0.5, 1X, X2) never reach the UI.
+ * v2.7.1 hotfix §1 — generic HOME/AWAY words are gone: with the real team
+ * names the label renders e.g. `1X2 Full-Time Result — W2 (Palmeiras)`.
  */
+
+import { formatOfficialBookmakerMarket } from "@/core/bookmakers/market-aliases";
 
 export interface MarketNames {
   /** Official English label (1xBet / BetForward menu). */
@@ -69,16 +73,25 @@ const SELECTION_EN: Record<string, string> = {
 
 /**
  * The full official English bet line for a signal, e.g.
- * "Asian Handicap: Away -0.5 — AWAY". Falls back to the stored marketLabel.
+ * `1X2 Full-Time Result — W2 (Palmeiras)`. With the optional real team names
+ * the generic HOME/AAY selection words are replaced by the actual club or
+ * player. Falls back to the stored marketLabel.
  */
 export function officialBetLine(
   marketKey: string,
   selection: string,
   storedLabel?: string,
+  homeTeam?: string,
+  awayTeam?: string,
 ): string {
   const m = MAP[marketKey];
   if (!m) return storedLabel ?? marketKey;
   if (marketKey === "acca2") return m.en;
+  // v2.7.1 — team-aware official naming (patch §1) when the fixture parties
+  // are known; the ◆-era generic HOME/AAY wording never returns.
+  if (homeTeam && awayTeam) {
+    return formatOfficialBookmakerMarket(marketKey, selection, homeTeam, awayTeam).posterLabel;
+  }
   const sel = SELECTION_EN[selection] ?? selection;
   if (["1x2", "dnb", "winner", "btts", "ou_1.5", "ou_2.5", "ou_3.5", "tot_sets_o2.5", "tot_games_o20.5", "tot_games_o21.5", "tot_games_o22.5"].includes(marketKey)) {
     return `${m.en} — ${sel}`;

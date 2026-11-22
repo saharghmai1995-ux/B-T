@@ -633,7 +633,7 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                   <span className="rounded-md border border-slate-800 bg-secondary px-1.5 py-0.5" dir="auto">
                     {pick.league}
                   </span>
-                  <span className="num">{fmtDateTimeFa(pick.startTime, false)}</span>
+                  <span dir="ltr" className="num inline-block tabular-nums">{fmtDateTimeFa(pick.startTime, false)}</span>
                   <span className="rounded-md bg-secondary px-1.5 py-0.5">{lineLabel(pick.line)}</span>
                 </div>
 
@@ -642,7 +642,7 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                   className="rounded-xl border-neon-gold bg-amber-400/10 px-3 py-2.5 text-center shadow-[0_0_18px_rgba(245,158,11,0.15)]"
                 >
                   <div className="num text-sm font-bold tracking-tight text-amber-300 md:text-base">
-                    {officialBetLine(pick.marketKey, pick.selection, pick.marketLabel)}
+                    {officialBetLine(pick.marketKey, pick.selection, pick.marketLabel, pick.homeName, pick.awayName)}
                   </div>
                 </div>
                 <p className="-mt-1 text-center text-[11px] leading-5 text-muted-foreground">{marketFa(pick.marketKey)}</p>
@@ -725,7 +725,8 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
             {recent.map((s) => {
               const amt = s.netProfit ?? 0;
               const expanded = expandedSettlements.has(s.id);
-              const alias = resolveBookmakerAliases(s.marketKey, s.selection);
+              // v2.7.1 §1 — official bookmaker naming with the REAL team names.
+              const alias = resolveBookmakerAliases(s.marketKey, s.selection, s.homeName, s.awayName);
               return (
                 <div
                   key={s.id}
@@ -752,14 +753,14 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                         {s.matchInfo}
                       </div>
                       <div className="truncate text-right text-[10px] text-muted-foreground" dir="ltr">
-                        {officialBetLine(s.marketKey, s.selection, s.marketLabel)}
+                        {officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <span className="hidden rounded-md bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground sm:inline">
                         {lineLabel(s.line)}
                       </span>
-                      <span className="num hidden text-[9px] text-slate-500 md:inline">{fmtDateTimeFa(s.settledAt, false)}</span>
+                      <span className="num hidden inline-block text-[9px] tabular-nums text-slate-500 md:inline" dir="ltr">{fmtDateTimeFa(s.settledAt, false)}</span>
                       <span className={cn("num text-[11px] font-bold", statusColor(s.status))}>
                         {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
                       </span>

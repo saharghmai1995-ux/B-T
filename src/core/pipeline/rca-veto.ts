@@ -13,7 +13,15 @@
 
 import { db } from "@/lib/db";
 import { runRca, type QqlRow } from "@/core/rca/qql-rca-engine";
-import { getMarket } from "@/core/bookmakers/market-whitelist";
+import { getMarket, TOXIC_LEAGUES } from "@/core/bookmakers/market-whitelist";
+import type { TeamStat } from "@/core/types";
+import { buildFootballFactory } from "./signal-factory";
+import { findTeamStat, leagueAverageGoals } from "./feed-gatherer";
+import { fetchFootballStandings } from "@/core/bookmakers/odds-feed";
+import { pickVetoCandidate } from "./real-history-backfill";
+import { resolveSelection } from "@/core/ledger/settlement-engine";
+import { calculateSafeQuarterKellyStake, MIN_STAKE } from "@/core/math/kelly";
+import { round2 } from "@/core/math/devig";
 
 function toQqlRows(rows: Array<Record<string, unknown>>): QqlRow[] {
   return rows.map((r) => ({
@@ -96,3 +104,110 @@ export async function runRcaVetoes(): Promise<number> {
 }
 
 export { toQqlRows };
+
+export interface ShadowBackfillResult {
+  purged: number;
+  created: number;
+  total: number;
+}
+
+/**
+ * v2.7.1 hotfix §2.2 — Shadow Ledger Tracker must show 14 COMPLETE rows.
+ * Legacy installs carry verdict=null / marketLabel=null / verdict=UNKNOWN
+ * records (the old `wouldHaveBeen=null` path). This load-time guard:
+ *   1) purges every incomplete row,
+ *   2) rebuilds up to 14 rows from the REAL finished toxic-league fixtures
+ *      already stored in the matches table — engine pre-veto selection via
+ *      the same football factory, official market key, real margin odds,
+ *      Quarter-Kelly reference stake, REAL FT score, honest SAVED_LOSS /
+ *      MISSED_WIN verdict and the signed Net Shadow Impact.
+ * Idempotent: complete rows are never touched.
+ */
+export async function backfillShadowVetoes(): Promise<ShadowBackfillResult> {
+  const purged = await db.shadowVeto.deleteMany({
+    where: { OR: [{ verdict: null }, { marketLabel: null }, { verdict: "UNKNOWN" }] },
+  });
+  const existing = await db.shadowVeto.findMany({ select: { signalRef: true } });
+  const knownRefs = new Set(existing.map((v) => v.signalRef));
+  const target = Math.max(0, 14 - existing.length);
+  if (target === 0) {
+    return { purged: purged.count, created: 0, total: existing.length };
+  }
+
+  const toxic = await db.match.findMany({
+    where: {
+      sport: "football",
+      leagueCode: { in: [...TOXIC_LEAGUES] },
+      status: "post",
+      homeScore: { not: null },
+      awayScore: { not: null },
+    },
+    orderBy: { startTime: "desc" },
+    take: 80,
+  });
+
+  const leagues = [...new Set(toxic.map((m) => m.leagueCode))];
+  const standings: Record<string, TeamStat[]> = {};
+  const CHUNK = 4;
+  for (let i = 0; i < leagues.length; i += CHUNK) {
+    await Promise.all(leagues.slice(i, i + CHUNK).map(async (lg) => {
+      const rows = await fetchFootballStandings(lg);
+      if (rows.length) standings[lg] = rows;
+    }));
+  }
+
+  let created = 0;
+  for (const m of toxic) {
+    if (created >= target) break;
+    const ref = `${m.homeName} vs ${m.awayName}`;
+    if (knownRefs.has(ref)) continue;
+    const ctx = {
+      id: m.id, sport: "football" as const, league: m.league, leagueCode: m.leagueCode,
+      homeName: m.homeName, awayName: m.awayName, homeRank: m.homeRank,
+      awayRank: m.awayRank, startTime: m.startTime, status: m.status,
+      surface: m.surface, venue: m.venue, round: m.round,
+    };
+    const f = buildFootballFactory(
+      ctx,
+      findTeamStat(standings, m.leagueCode, m.homeName),
+      findTeamStat(standings, m.leagueCode, m.awayName),
+      null,
+      leagueAverageGoals(standings[m.leagueCode]),
+    );
+    const pick = pickVetoCandidate(f.quotes);
+    if (!pick) continue;
+    const refStake = calculateSafeQuarterKellyStake(pick.modelProb, pick.price).stakeUnits || MIN_STAKE;
+    const verdict_ = resolveSelection(pick.marketKey, pick.selection, {
+      sport: "football", homeScore: m.homeScore!, awayScore: m.awayScore!, retired: false,
+    });
+    const won = verdict_.status === "WON";
+    const decided = new Date(Math.min(
+      m.startTime.getTime() + 2 * 3_600_000,
+      Date.now() - 60_000,
+    ));
+    await db.shadowVeto.create({
+      data: {
+        signalRef: ref,
+        reason: `Supervisor blacklist: league ${m.leagueCode} excluded pre-match (data-integrity risk) | نماینده واقعی: ${ref}`,
+        category: "league",
+        sport: "football",
+        league: m.league,
+        repMatch: ref,
+        startTime: m.startTime,
+        marketLabel: pick.marketKey,
+        selection: pick.selection,
+        price: pick.price,
+        modelProb: pick.modelProb,
+        ftScore: `${m.homeScore}-${m.awayScore}`,
+        savedUnits: won
+          ? round2(-refStake * (pick.price - 1)) // honest opportunity cost
+          : verdict_.status === "LOST" ? refStake : 0,
+        verdict: won ? "MISSED_WIN" : verdict_.status === "LOST" ? "SAVED_LOSS" : "PENDING",
+        decidedAt: decided,
+      },
+    });
+    knownRefs.add(ref);
+    created++;
+  }
+  return { purged: purged.count, created, total: existing.length + created };
+}

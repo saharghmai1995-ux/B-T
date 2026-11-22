@@ -19,6 +19,7 @@ import { db } from "@/lib/db";
 import { tehranDayKey } from "@/core/pipeline/ingest-service";
 import { listSchedule, updateSlot, laneForKind } from "@/core/telegram/broadcast-service";
 import { renderPosterSvg, type PosterSpec } from "@/core/telegram/poster-renderer";
+import { formatOfficialBookmakerMarket, cleanSelectionLabel } from "@/core/bookmakers/market-aliases";
 import { getChannelId, getTelegramBotToken } from "@/core/pipeline/settings";
 import { sendPhotoTo, sendMessageTo, type SendResult } from "@/core/telegram/bot-client";
 
@@ -93,6 +94,10 @@ async function buildSignalCard(): Promise<{ png: Uint8Array; caption: string; ti
   const hoursAhead = (kickoff.getTime() - Date.now()) / 3_600_000;
   if (hoursAhead < 0.5 || hoursAhead > 96) return null; // stale or too far — skip honestly
 
+  // v2.7.1 §1 — the poster carries the OFFICIAL bookmaker market name plus
+  // the REAL team name (raw `1X2 Full-Time Result◆AWAY` formats are dead).
+  const clean = formatOfficialBookmakerMarket(s.marketKey, s.selection, s.match.homeName, s.match.awayName);
+
   const spec: PosterSpec = {
     kind: "SIGNAL",
     matchInfo: `${s.match.homeName} vs ${s.match.awayName}`,
@@ -100,8 +105,8 @@ async function buildSignalCard(): Promise<{ png: Uint8Array; caption: string; ti
     awayName: s.match.awayName,
     competition: s.match.league,
     sport: s.match.sport as "football" | "tennis",
-    marketLabel: s.marketLabel,
-    selection: s.selection,
+    marketLabel: clean.posterLabel,
+    selection: cleanSelectionLabel(s.marketKey, s.selection, s.match.homeName, s.match.awayName),
     price: s.price,
     evPct: s.evPct,
     prob: s.modelProb * 100,
@@ -113,8 +118,8 @@ async function buildSignalCard(): Promise<{ png: Uint8Array; caption: string; ti
   const svg = renderPosterSvg(spec);
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   const caption =
-    `⚡ <b>${s.selection}</b> @ ${s.price.toFixed(2)}\n` +
-    `${s.marketLabel} — ${s.match.league}\n` +
+    `⚡ <b>${clean.onexbet}</b> @ ${s.price.toFixed(2)}\n` +
+    `${s.match.homeName} vs ${s.match.awayName} — ${s.match.league}\n` +
     `EV +${s.evPct.toFixed(1)}% | Prob ${(s.modelProb * 100).toFixed(1)}% | Stake ${s.stake.toFixed(0)}u\n` +
     `🔒 SHA-256 verified — NeoBet Quant Pro`;
   return { png: new Uint8Array(png), caption, title: spec.matchInfo };

@@ -9,7 +9,8 @@ import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
-import { seedRealHistory, type HistorySeedSummary } from "./real-history-backfill";
+import { seedRealHistory, seedTennisHistory, type HistorySeedSummary } from "./real-history-backfill";
+import { backfillShadowVetoes } from "./rca-veto";
 import { getSettings, maskSettings, SETTING_KEYS } from "./settings";
 import { getOddsFeedStats } from "@/core/bookmakers/odds-feed";
 import { shinDevig } from "@/core/math/devig";
@@ -79,6 +80,7 @@ export interface AppVeto {
   category: string;
   sport: string | null;
   league: string | null;
+  repMatch: string | null; // v2.7 — representative fixture "Home vs Away"
   marketLabel: string | null;
   selection: string | null;
   price: number | null;
@@ -87,6 +89,7 @@ export interface AppVeto {
   savedUnits: number | null;
   verdict: string | null;
   decidedAt: string | null;
+  startTime: string | null; // v2.7 — REAL fixture kickoff
   createdAt: string;
 }
 
@@ -265,6 +268,20 @@ export async function ensureBootstrapState(): Promise<AppState> {
         ranAt: new Date().toISOString(),
       };
     }
+  }
+  // v2.7.1 hotfix §2.5 — 30-day tennis backfill for existing installs whose
+  // tennis tab is still empty (one-time flag; never wipes the football ledger).
+  try {
+    await seedTennisHistory();
+  } catch (err) {
+    console.error("tennis history seed failed", err);
+  }
+  // v2.7.1 hotfix §2.2 — Shadow Ledger hygiene: purge incomplete veto rows and
+  // rebuild the 14-row tracker before the state snapshot is assembled.
+  try {
+    await backfillShadowVetoes();
+  } catch (err) {
+    console.error("shadow veto backfill failed", err);
   }
   const state = await bootstrapState({ ingestSummary: summary, historySeed: seedSummary });
   // Absolute guard: retry the live feed once when the board came back empty.

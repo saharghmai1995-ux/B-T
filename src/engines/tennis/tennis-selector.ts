@@ -23,6 +23,17 @@ const EV_THRESHOLD = 0.045;
  * active — a LIVE 1xBet price with EV >= +4.0% is signalable even when the
  * tournament is not elite. */
 export const LIVE_EV_THRESHOLD = 0.04;
+/** v2.7.1 hotfix §2.5 — tennis singles REQUIRE a real market price. During
+ * tour breaks NO source publishes tennis prices (The Odds API: zero active
+ * tennis keys; ESPN core odds: no items; OddsPapi: tennis unsupported), and
+ * model-fair estimate prices carry the full 5.5% margin — a measured max
+ * model-vs-consensus divergence of just 2.1pp can NEVER produce an honest
+ * +EV pick, only margin-artifact noise (audited +2.8% longshots at 1pp
+ * divergence). So the estimate gate stays at the strict +4.5% bar: it only
+ * fires on genuine divergences, and LIVE rows (layers 1/3, wired into this
+ * selector) keep the +4.0% bar. The tennis line fills automatically the
+ * moment any market source publishes prices again. */
+export const ESTIMATE_EV_FLOOR = 0.045;
 /** Model-vs-market honesty guard (v2.7): divergence tolerance raised from
  * 12pp to 18pp so live edges are not over-filtered — the guard still blocks
  * saturated rank-noise "edges" while letting real live value through. */
@@ -70,16 +81,21 @@ export function buildTennisQuotes(
     }
   }
 
-  // v2.5 — attach REAL 1xBet (preferred) or Pinnacle winner prices when the
-  // live feed carries this matchup. Matching is ORDER-INDEPENDENT: ESPN and
-  // the book may disagree on who is "home", so the pair key is name-sorted
-  // and prices are re-aligned to ESPN's home/away by comparing player names.
+  // v2.5 — attach REAL winner prices when a live feed carries this matchup.
+  // v2.7.1 — priority: 1xBet → Pinnacle → ESPN Core PUBLIC per-event odds
+  // (keyless layer 3, hotfix §2.5: the tennis engine must never fall back to
+  // bare model-fair prices while any public market source is reachable).
+  // Matching is ORDER-INDEPENDENT: ESPN and the book may disagree on who is
+  // "home", so the pair key is name-sorted and prices are re-aligned to ESPN's
+  // home/away by comparing player names.
   if (liveOdds) {
     const normName = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
     const nh = normName(match.homeName);
     const na = normName(match.awayName);
     const pair = [nh, na].sort().join("|");
-    const row = liveOdds.get(`${pair}|1XBET_LIVE`) ?? liveOdds.get(`${pair}|PINNACLE`);
+    const row = liveOdds.get(`${pair}|1XBET_LIVE`)
+      ?? liveOdds.get(`${pair}|PINNACLE`)
+      ?? liveOdds.get(`${pair}|ESPN_PUBLIC`);
     if (row?.home && row?.away && row.home > 1.01 && row.away > 1.01) {
       // Re-align book prices to THIS fixture's home/away sides.
       const bookHome = normName(row.homeName ?? "");
@@ -123,7 +139,7 @@ export function pickSingleEvTennis(match: MatchContext, quotes: TennisQuote[]): 
   let bestEv = -Infinity;
   for (const q of quotes) {
     const ev = q.modelProb * q.price - 1;
-    const threshold = q.source === "LIVE" ? LIVE_EV_THRESHOLD : EV_THRESHOLD;
+    const threshold = q.source === "LIVE" ? LIVE_EV_THRESHOLD : ESTIMATE_EV_FLOOR;
     const priceOk = q.source === "LIVE"
       ? q.price >= 1.45 && q.price <= 2.6
       : q.price >= PRICE_MIN && q.price <= PRICE_MAX;

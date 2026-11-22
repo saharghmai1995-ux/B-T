@@ -33,11 +33,15 @@ export const HISTORY_SEEDED_KEY = "historySeededAt";
 const TOXIC_LEAGUES = new Set(["esp.2", "usa.1", "fifa.friendly"]);
 const FOOTBALL_PAST_DAYS = [1, 2, 3, 4]; // all-league probes (yesterday .. -4)
 const FOOTBALL_FILL_DAYS = [5, 6, 7]; // active-league fills up to the full 7-day window
-const TENNIS_RANGE = [7, 1]; // from 7 days ago to yesterday
+// v2.7.1 hotfix §2.5 — 30 days of finished ATP/WTA (+ Davis Cup ties carried
+// by the tours' scoreboards) so the tennis tab of the ledger never stays zero.
+const TENNIS_RANGE = [30, 1]; // from 30 days ago to yesterday
+const TENNIS_SEEDED_KEY = "tennisHistorySeededAt"; // one-time 30d tennis backfill flag
 const COVERAGE = 0.66; // share of finished fixtures the supervisor would have issued
 const ANCHOR_COVERAGE = 0.3; // occasional extra anchor pick (as in live acca anchors)
 const ACCA_EVERY = 6; // every N-th issued signal becomes a 2-leg acca instead
 const MAX_SUMMARY_FETCHES = 90; // closing-odds summary calls per backfill run
+const TENNIS_BACKFILL_MAX = 48; // tennis singles cap per backfill run (cold-start safe)
 
 export interface HistorySeedSummary {
   skipped: boolean;
@@ -153,6 +157,25 @@ function bestSoftPick(
   return best;
 }
 
+/**
+ * v2.7.1 hotfix §2.2 — a shadow-veto row must NEVER be empty again: when the
+ * strict band finds nothing, fall back to the engine quote closest to a
+ * realistic bet (same model machinery, real margin price) so every tracker
+ * row carries the engine's pre-veto selection + odds + reference stake.
+ */
+export function pickVetoCandidate(
+  quotes: Array<{ marketKey: string; selection: string; modelProb: number; trueProb: number; price: number; source: string }>,
+): { marketKey: string; selection: string; modelProb: number; trueProb: number; price: number } | null {
+  const soft = bestSoftPick(quotes);
+  if (soft) return soft;
+  const widened = quotes.filter((q) => q.price >= 1.3 && q.price <= 3.0);
+  const pool = widened.length > 0 ? widened : quotes;
+  if (pool.length === 0) return null;
+  return pool.reduce((best, q) =>
+    q.modelProb * q.price > best.modelProb * best.price ? q : best,
+  );
+}
+
 /** Issue candidates for every finished fixture (chronological, deterministic). */
 async function buildCandidates(
   pack: { football: FeedMatch[]; tennis: FeedMatch[] },
@@ -213,7 +236,8 @@ async function buildCandidates(
         null,
         leagueAvg(standings[m.leagueCode]),
       );
-      const soft = bestSoftPick(f.quotes);
+      // v2.7.1 §2.2 — vetoes are ALWAYS complete: strict band → widened pick.
+      const soft = pickVetoCandidate(f.quotes);
       vetoes.push({
         ref: `${m.homeName} vs ${m.awayName}`,
         reason: `Supervisor blacklist: league ${m.leagueCode} excluded pre-match (data-integrity risk)`,
@@ -419,6 +443,8 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
       data: {
         signalRef: v.ref, reason: v.reason, category: v.category,
         sport: v.sport, league: v.league,
+        repMatch: v.ref, // v2.7.1 — tracker shows the REAL fixture name
+        startTime: v.startTime, // v2.7.1 — REAL kickoff for the tracker table
         marketLabel: v.wouldHaveBeen ? v.wouldHaveBeen.marketKey : null,
         selection: v.wouldHaveBeen ? v.wouldHaveBeen.selection : null,
         price: v.wouldHaveBeen ? v.wouldHaveBeen.price : null,
@@ -464,4 +490,108 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
 function settleTime(startTime: Date): Date {
   const t = new Date(startTime.getTime() + 2 * 3600_000);
   return t.getTime() > Date.now() - 60_000 ? new Date(Date.now() - 60_000) : t;
+}
+
+export interface TennisSeedSummary {
+  skipped: boolean;
+  reason: string;
+  fixtures: number;
+  seeded: number;
+  won: number;
+  lost: number;
+  void: number;
+  ranAt: string;
+}
+
+/**
+ * v2.7.1 hotfix §2.5 — 30-day tennis ledger backfill for EXISTING installs.
+ * seedRealHistory runs once with the old 7-day tennis window; installs that
+ * already have a football ledger would otherwise keep an empty tennis tab
+ * forever. This appends settled tennis singles from the last 30 days of REAL
+ * ATP/WTA (and Davis Cup ties carried by the tours) — no wipe, no mocks:
+ * real ESPN set scores, the same tennis factory, the same Quarter-Kelly
+ * staking chain against the running bank.
+ */
+export async function seedTennisHistory(): Promise<TennisSeedSummary> {
+  const ranAt = new Date().toISOString();
+  const flag = await getSetting(TENNIS_SEEDED_KEY);
+  const tennisSettled = await db.signal.count({ where: { sport: "tennis", status: { not: "OPEN" } } });
+  if (flag && tennisSettled > 0) {
+    return { skipped: true, reason: "30d tennis history already seeded", fixtures: 0, seeded: 0, won: 0, lost: 0, void: 0, ranAt };
+  }
+
+  const pack = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
+  const finished = pack
+    .filter((m) => m.status === "post" && m.homeScore != null && m.awayScore != null)
+    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+  let bank = round2(STARTING_BANK + await db.signal.aggregate({ _sum: { netProfit: true } }).then((a) => a._sum.netProfit ?? 0));
+  let seeded = 0, won = 0, lost = 0, void_ = 0;
+
+  for (const m of finished) {
+    if (seeded >= TENNIS_BACKFILL_MAX) break;
+    const id = await upsertHistoryMatch(m);
+    const ctx = {
+      id, sport: "tennis" as const, league: m.league, leagueCode: m.leagueCode,
+      homeName: m.homeName, awayName: m.awayName, homeRank: m.homeRank ?? null,
+      awayRank: m.awayRank ?? null, startTime: m.startTime, status: m.status,
+      surface: m.surface ?? null, venue: m.venue ?? null, round: m.round ?? null,
+    };
+    const rng = mulberry32(hashSeed(m.espnEventId));
+    const roll = rng();
+    const f = buildTennisFactory(ctx);
+    // v2.7.1 §2.5 — history picks use the same widening ladder as the veto
+    // candidates (strict band EV≥0 → strongest in-band quote). No free
+    // historical tennis odds exist anywhere, so the settled rows carry the
+    // honest MODEL FAIR price (ESTIMATE provenance) — set scores, stakes and
+    // results stay 100% REAL.
+    const c = f.single ?? pickVetoCandidate(f.quotes) ?? f.anchors[0] ?? null;
+    const keep = roll <= COVERAGE || (roll <= COVERAGE + ANCHOR_COVERAGE && f.anchors[0]);
+    if (!keep || !c) continue;
+
+    const evPct = "evPct" in c && typeof c.evPct === "number"
+      ? c.evPct
+      : Math.round((c.modelProb * c.price - 1) * 1000) / 10;
+    const marketLabel = ("marketLabel" in c && c.marketLabel
+      ? String(c.marketLabel)
+      : getMarket(c.marketKey)?.label ?? c.marketKey);
+    const { stake, stakeMode } = chooseStakeMode(c.modelProb, c.price, bank);
+    const fixture = {
+      sport: "tennis", homeScore: m.homeScore!, awayScore: m.awayScore!,
+      retired: m.retired === true,
+    };
+    const v = resolveSelection(c.marketKey, c.selection, fixture);
+    const net = round2(
+      v.status === "WON" ? stake * v.factor * (c.price - 1)
+        : v.status === "LOST" ? -stake : 0,
+    );
+    const status = net > 0 && v.status === "WON" ? "WON"
+      : v.status === "LOST" ? "LOST"
+        : net === 0 && v.status === "WON" ? "VOID" : v.status;
+    const settledAt = settleTime(m.startTime);
+    const hash = lockSignal({
+      matchInfo: `${m.homeName} vs ${m.awayName} — ${c.marketKey} ${c.selection}`,
+      sport: "tennis", line: "SINGLE_EV", marketKey: c.marketKey, selection: c.selection,
+      price: c.price, modelProb: c.modelProb, evPct, stake,
+      issuedAt: m.startTime.toISOString(),
+    });
+    await db.signal.create({
+      data: {
+        matchId: id, sport: "tennis", line: "SINGLE_EV",
+        marketKey: c.marketKey, marketLabel, selection: c.selection,
+        modelProb: c.modelProb, trueProb: c.trueProb, price: c.price,
+        evPct, stake, stakeMode, shaHash: hash,
+        status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
+        createdAt: m.startTime,
+      },
+    });
+    bank = round2(bank + net);
+    seeded++;
+    if (status === "WON") won++;
+    else if (status === "LOST") lost++;
+    else void_++;
+  }
+
+  await setSetting(TENNIS_SEEDED_KEY, ranAt);
+  return { skipped: false, reason: tennisSettled === 0 ? "empty tennis tab backfilled (30d)" : "refreshed", fixtures: finished.length, seeded, won, lost, void: void_, ranAt };
 }

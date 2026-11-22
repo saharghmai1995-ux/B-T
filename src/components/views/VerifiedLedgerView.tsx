@@ -22,6 +22,7 @@ import { formatSafeDateTime } from "@/lib/format";
 import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
 import { officialBetLine } from "@/lib/markets";
+import { formatStoredMarketLabel } from "@/core/bookmakers/market-aliases";
 import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -257,17 +258,24 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           </div>
         </div>
         <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
-          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
-            بانک پایانی بازپخش: <span className="num font-bold text-emerald-300" dir="ltr">{fmtUnits(policyView.endBank, 1)}u</span>
+          {/* v2.7.1 hotfix §2.3 — these headline chips read the SAME unified
+              arithmetic as the Overview tab (computeUnifiedBankrollMetrics via
+              computeMasterMetrics): bank, net profit and ROI are 100% identical
+              on both pages — the audited 20.0u contradiction is impossible. */}
+          <span className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-emerald-200">
+            بانک رسمی (پایه ۱٬۰۰۰u): <span className="num font-bold text-emerald-300" dir="ltr">{fmtUnits(m.bankroll, 1)}u</span>
           </span>
           <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
-            سود/زیان کل: <span className={cn("num font-bold", policyView.pnl >= 0 ? "text-emerald-300" : "text-red-300")} dir="ltr">{policyView.pnl >= 0 ? "+" : ""}{fmtUnits(policyView.pnl, 1)}u</span>
+            سود خالص رسمی: <span className={cn("num font-bold", m.totalProfit >= 0 ? "text-emerald-300" : "text-red-300")} dir="ltr">{m.totalProfit >= 0 ? "+" : ""}{fmtUnits(m.totalProfit, 1)}u</span>
           </span>
           <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
-            ROI: <span className="num font-bold text-cyan-300" dir="ltr">{policyView.roi >= 0 ? "+" : ""}{policyView.roi}%</span>
+            ROI: <span className="num font-bold text-cyan-300" dir="ltr">{m.roi >= 0 ? "+" : ""}{m.roi}%</span>
+          </span>
+          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-400">
+            وین‌ریت: <span className="num font-bold text-violet-300" dir="ltr">{fmtUnits(m.winRate, 1)}%</span>
           </span>
           <span className="text-[10px] text-muted-foreground">
-            بازپخش صادقانه {policyView.count} تسویه به‌ترتیب زمانی — برد/باخت ثابت، فقط استیک با سیاست انتخابی محاسبه می‌شود
+            (بازپخش سیاست استیک جدا محاسبه می‌شود — فقط برای مقایسه؛ بازپخش {policyView.count} تسویه → بانک {fmtUnits(policyView.endBank, 1)}u)
           </span>
         </div>
 
@@ -538,7 +546,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     <div className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-muted-foreground">
                       <span className="truncate">{s.league}</span>
                       <span>·</span>
-                      <span className="truncate" dir="ltr">{officialBetLine(s.marketKey, s.selection, s.marketLabel)}</span>
+                      <span className="truncate" dir="ltr">{officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}</span>
                       <span>@</span>
                       <span className="num" dir="ltr">{fmtPrice(s.price)}</span>
                     </div>
@@ -712,7 +720,13 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
               <tbody>
                 {state.shadowVetoes.map((v) => {
                   const badge = verdictBadge(v);
-                  const betline = officialBetLine(v.marketLabel ?? "", v.selection ?? "", "");
+                  // v2.7.1 §1 — the tracker renders the engine's PRE-VETO pick
+                  // with the official bookmaker name and the REAL team names
+                  // (from the representative fixture), odds and reference stake.
+                  const [repHome, repAway] = (v.repMatch ?? "").includes(" vs ")
+                    ? (v.repMatch ?? "").split(" vs ")
+                    : ["Home", "Away"];
+                  const betline = formatStoredMarketLabel(v.marketLabel, v.selection, repHome || "Home", repAway || "Away");
                   return (
                     <tr key={v.id} className="transition-colors hover:bg-secondary/40">
                       <td className="max-w-[220px] px-3 py-2">
@@ -786,7 +800,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                 {verify.shaHash}
               </div>
               <div className="text-[10px] text-slate-400">
-                مارکت: <span dir="ltr">{officialBetLine(verify.marketKey, verify.selection, verify.marketLabel)}</span> · ضریب{" "}
+                مارکت: <span dir="ltr">{officialBetLine(verify.marketKey, verify.selection, verify.marketLabel, verify.homeName, verify.awayName)}</span> · ضریب{" "}
                 <span className="num" dir="ltr">{fmtPrice(verify.price)}</span> · استیک{" "}
                 <span className="num" dir="ltr">{fmtUnits(verify.stake, 0)}u</span>
               </div>

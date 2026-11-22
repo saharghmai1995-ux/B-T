@@ -391,7 +391,7 @@ export async function fetchOddsPapiRows(apiKey: string | null): Promise<Map<stri
  * Returns a name-keyed map of decimal prices. Never throws; may be empty.
  */
 export interface LiveOddsRow {
-  book: "1XBET_LIVE" | "PINNACLE";
+  book: "1XBET_LIVE" | "PINNACLE" | "ESPN_PUBLIC";
   home?: number; away?: number; draw?: number;
   /** Raw book-side names (tennis unordered matching). */
   homeName?: string; awayName?: string;

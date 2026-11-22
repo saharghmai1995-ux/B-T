@@ -39,8 +39,10 @@ export function computeUnifiedBankrollMetrics(
   const netProfitUnits = r2(settled.reduce((acc, s) => acc + (s.profitUnits || 0), 0));
   const totalStakedUnits = r2(settled.reduce((acc, s) => acc + (s.stakeUnits || 0), 0));
   const currentBankroll = r2(initialBankroll + netProfitUnits);
-  const roiPercent = totalStakedUnits > 0 ? r2((netProfitUnits / totalStakedUnits) * 1000) / 10 : 0;
-  const winRatePercent = settled.length > 0 ? r2((wins / settled.length) * 1000) / 10 : 0;
+  // v2.7.1 — Number(toFixed()) keeps the SHORTEST float repr: the raw
+  // r2(...)/10 division printed 51.282000000000004% on the ledger header.
+  const roiPercent = totalStakedUnits > 0 ? Number(((netProfitUnits / totalStakedUnits) * 100).toFixed(2)) : 0;
+  const winRatePercent = settled.length > 0 ? Number(((wins / settled.length) * 100).toFixed(2)) : 0;
 
   return {
     initialBankroll,

@@ -20,6 +20,7 @@ import { HashChip, PriceTag, SourceBadge, TeamAvatar } from "@/components/shared
 import { useAppStore } from "@/lib/store";
 import { officialBetLine, marketFa, settlementRule } from "@/lib/markets";
 import { fmtPrice, fmtUnits, fmtDateTimeFa, lineLabel } from "@/lib/api-types";
+import { formatOfficialBookmakerMarket } from "@/core/bookmakers/market-aliases";
 import type { AppSignal } from "@/lib/api-types";
 import { ExternalLink, Layers3, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -39,12 +40,21 @@ const pct = (p: number): number =>
 const pctStr = (p: number): string =>
   Number.isFinite(p) ? (p * 100).toFixed(1) : "—";
 
-export function SignalCard({ s, rank }: { s: AppSignal; rank?: number }) {
+/** Bookmaker display mode driven by the Signal-Center switch (hotfix §1). */
+export type CardBookMode = "ALL" | "1XBET" | "BETFORWARD";
+
+export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?: number; bookMode?: CardBookMode }) {
   const addToBetslip = useAppStore((st) => st.addToBetslip);
   const isAcca = s.line === "ACCA2";
 
-  // 2) Official English bet line — raw machine codes never reach the UI.
-  const officialLine = officialBetLine(s.marketKey, s.selection, s.marketLabel);
+  // 2) Official bet line — v2.7.1: the OFFICIAL bookmaker market name plus the
+  // REAL team/player name. The switch on top of the Signal Center flips the
+  // card text between the 1xBet wording and the BetForward wording.
+  const clean = formatOfficialBookmakerMarket(s.marketKey, s.selection, s.homeName || "Home", s.awayName || "Away");
+  const officialLine =
+    bookMode === "1XBET" ? clean.onexbet
+      : bookMode === "BETFORWARD" ? clean.betforward
+        : officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName);
   const dashIdx = officialLine.indexOf(" — ");
   const marketPart = dashIdx >= 0 ? officialLine.slice(0, dashIdx) : officialLine;
   const selectionPart = dashIdx >= 0 ? officialLine.slice(dashIdx + 3) : null;
@@ -91,20 +101,25 @@ export function SignalCard({ s, rank }: { s: AppSignal; rank?: number }) {
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <span className="num rounded-md border border-slate-800 bg-secondary/50 px-2 py-1 text-[10px] text-slate-300">
+          <span
+            dir="ltr"
+            className="num inline-block rounded-md border border-slate-800 bg-secondary/50 px-2 py-1 text-[10px] tabular-nums text-slate-300"
+          >
             📅 {fmtDateTimeFa(s.startTime)}
           </span>
           <span className="text-[9px] text-muted-foreground">{lineLabel(s.line)}</span>
         </div>
       </div>
 
-      {/* ── 2) Official English market box (THE hero element) ─────────────── */}
+      {/* ── 2) Official market box (THE hero element) ─────────────────── */}
       <div className="mt-3 rounded-xl border border-neon-violet bg-violet-500/10 px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-violet-300/70">
             Official Bet Line
           </span>
-          <span className="text-[9px] text-violet-300/70">1xBet / BetForward</span>
+          <span className="text-[9px] text-violet-300/70">
+            {bookMode === "1XBET" ? "1xBet (official)" : bookMode === "BETFORWARD" ? "BetForward (official)" : "1xBet / BetForward"}
+          </span>
         </div>
         <div dir="ltr" className="mt-1.5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center">
           <span className="text-[15px] font-extrabold leading-snug text-violet-100 md:text-base">
@@ -112,7 +127,7 @@ export function SignalCard({ s, rank }: { s: AppSignal; rank?: number }) {
           </span>
           {selectionPart && (
             <>
-              <span aria-hidden className="num text-[10px] text-violet-400">◆</span>
+              <span aria-hidden className="num text-[10px] text-violet-400">›</span>
               <span className="num neon-violet rounded-lg border border-neon-violet bg-violet-500/15 px-2 py-0.5 text-[13px] font-black tracking-wider">
                 {selectionPart}
               </span>
@@ -212,7 +227,7 @@ export function SignalCard({ s, rank }: { s: AppSignal; rank?: number }) {
             league: s.league,
             sport: s.sport,
             marketKey: s.marketKey,
-            marketLabel: officialBetLine(s.marketKey, s.selection, s.marketLabel),
+            marketLabel: officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName),
             selection: s.selection,
             price: s.price,
             modelProb: s.modelProb,

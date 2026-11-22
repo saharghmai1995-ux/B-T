@@ -311,7 +311,7 @@ export default function AppShell() {
             <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
                 <span className="flex items-center gap-2">
-                  NeoBet Quant Pro v2.7 · آبشار سه‌لایه ضرایب (Odds API / OddsPapi / ESPN Core) · کلِی یک‌چهارم · پخش خودکار دوزبانه تلگرام (عمومی + VIP) · Zero-Mock
+                  NeoBet Quant Pro v2.7.1 · آبشار سه‌لایه ضرایب (Odds API / OddsPapi / ESPN Core) · نام رسمی بوک‌میکر + نام واقعی تیم روی همه کارت‌ها و پوسترها · پخش خودکار دوزبانه تلگرام (عمومی + VIP) · Zero-Mock
                 </span>
                 <span className="flex items-center gap-3">
                   <LiveClock className="text-cyan-300" />

@@ -159,7 +159,16 @@ async function settleArb(sig: { id: string; stake: number; arbBooks: string | nu
 
 /** Generate quotes + Line-1 signals for upcoming fixtures. */
 async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; singles: number }> {
-  const upcoming = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
+  const preAll = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
+  // v2.7.1 hotfix §2.5 — dedicated tennis budget: the old shared slice(0, 90)
+  // was consumed by football alone (899 tennis pre fixtures sat beyond the
+  // cap forever), so the 17 upcoming pre ties never reached the selector.
+  const footballUp = preAll.filter((m) => m.sport === "football").slice(0, 60);
+  const tennisUp = preAll
+    .filter((m) => m.sport === "tennis")
+    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+    .slice(0, 50);
+  const upcoming = [...footballUp, ...tennisUp];
   let quotes = 0;
   let singles = 0;
   const existing = await db.signal.findMany({
@@ -168,6 +177,7 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
   });
   const have = new Set(existing.map((s) => `${s.matchId}|${s.marketKey}|${s.selection}`));
   const bank = await currentBankroll();
+  let espnTennisOddsFetches = 0; // v2.7.1 — layer-3 public-odds budget per run
 
   for (const m of upcoming.slice(0, 90)) {
     const id = await upsertMatch(m);
@@ -192,7 +202,30 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
         singles += await persistSingle(f.single, bank);
       }
     } else {
-      const f = buildTennisFactory(ctx, pack.liveOdds);
+      // v2.7.1 hotfix §2.5 — keyless ESPN Core PUBLIC per-event odds feed the
+      // tennis selector directly (layer 3): when Layers 1/2 carry no row for
+      // this pairing, the public market anchor still produces LIVE-priced
+      // quotes — the 17 pre fixtures stop being a dead tab.
+      let odds = pack.liveOdds;
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+      const pair = [norm(m.homeName), norm(m.awayName)].sort().join("|");
+      const hasRow =
+        odds.get(`${pair}|1XBET_LIVE`) ?? odds.get(`${pair}|PINNACLE`) ?? odds.get(`${pair}|ESPN_PUBLIC`);
+      if (!hasRow && espnTennisOddsFetches < 30) {
+        espnTennisOddsFetches++;
+        const pub = await fetchEspnPublicEventOdds("tennis", m.leagueCode, m.espnEventId);
+        if (pub?.homeOdds != null && pub.awayOdds != null) {
+          odds = new Map(odds);
+          odds.set(`${pair}|ESPN_PUBLIC`, {
+            book: "ESPN_PUBLIC",
+            home: pub.homeOdds,
+            away: pub.awayOdds,
+            homeName: m.homeName,
+            awayName: m.awayName,
+          });
+        }
+      }
+      const f = buildTennisFactory(ctx, odds);
       quotes += await persistQuotes(id, f.quotes);
       if (f.single && !have.has(`${id}|${f.single.marketKey}|${f.single.selection}`)) {
         singles += await persistSingle(f.single, bank);
@@ -243,7 +276,13 @@ async function currentBankroll(): Promise<number> {
 /** Line 2 — build the best 2-leg acca from fresh anchors (independent matches). */
 async function buildAccas(pack: GatheredPack): Promise<number> {
   const anchors: Array<{ matchId: string; espnEventId: string; label: string; marketKey: string; selection: string; price: number; prob: number }> = [];
-  const upcoming = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre").slice(0, 90);
+  const preAll = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
+  const footballUp = preAll.filter((m) => m.sport === "football").slice(0, 40);
+  const tennisUp = preAll
+    .filter((m) => m.sport === "tennis")
+    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+    .slice(0, 30);
+  const upcoming = [...footballUp, ...tennisUp];
   for (const m of upcoming) {
     const id = await db.match.findUnique({ where: { espnEventId: m.espnEventId }, select: { id: true } });
     if (!id) continue;

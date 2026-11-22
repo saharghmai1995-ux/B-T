@@ -14,7 +14,7 @@ import { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/primitives";
 import { useAppStore, type SportFilter } from "@/lib/store";
-import { SignalCard } from "./SignalCard";
+import { SignalCard, type CardBookMode } from "./SignalCard";
 import type { AppStatePayload } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 import { Activity, Crosshair, Layers3, Scale } from "lucide-react";
@@ -43,12 +43,14 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
   // A real 1xBet odds key is configured (either provider side).
   const liveKey = state.health.oddsApi || state.health.oddsApiIo;
 
+  // v2.7.1 hotfix §1 — the 1xBet / BetForward switch drives the OFFICIAL
+  // market wording on every card (onexbet ↔ betforward clean labels).
+  const bookMode: CardBookMode = book === "1xBet" ? "1XBET" : book === "BetForward" ? "BETFORWARD" : "ALL";
+
   const signals = useMemo(() => {
     let rows = state.openSignals;
     if (sportFilter !== "all") rows = rows.filter((s) => s.sport === sportFilter);
     if (line !== "all") rows = rows.filter((s) => s.line === line);
-    // Book filter: BetForward signals map to the same whitelisted markets —
-    // both books execute the identical official button; filter is informational.
     void book;
     // v2.7 — default order: soonest kickoff first (ascending start time).
     return [...rows].sort(
@@ -171,7 +173,7 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           {signals.map((s, i) => (
-            <SignalCard key={s.id} s={s} rank={i} />
+            <SignalCard key={s.id} s={s} rank={i} bookMode={bookMode} />
           ))}
         </div>
       )}
