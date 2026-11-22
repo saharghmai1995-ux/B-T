@@ -17,7 +17,7 @@
 import sharp from "sharp";
 import { db } from "@/lib/db";
 import { tehranDayKey } from "@/core/pipeline/ingest-service";
-import { listSchedule, updateSlot } from "@/core/telegram/broadcast-service";
+import { listSchedule, updateSlot, laneForKind } from "@/core/telegram/broadcast-service";
 import { renderPosterSvg, type PosterSpec } from "@/core/telegram/poster-renderer";
 import { getChannelId, getTelegramBotToken } from "@/core/pipeline/settings";
 import { sendPhotoTo, sendMessageTo, type SendResult } from "@/core/telegram/bot-client";
@@ -231,22 +231,26 @@ async function dispatchDueSlots(): Promise<void> {
     if (slot.sentAt && tehranDayKey(new Date(slot.sentAt)) === dayKey) continue;
     if (slotMin > nowMin) continue;
 
+    // v2.7 STRICT ROUTING — the lane follows the KIND, never the stored channel:
+    // signal cards → VIP; education/news/radar/transparency reports → PUBLIC.
+    const lane = laneForKind(slot.kind);
+
     let result: SendResult = { ok: false, transport: "skipped", error: "no_content" };
     try {
       if (slot.kind === "SIGNAL") {
         const card = await buildSignalCard();
-        if (card) result = await deliver(slot.channel, { photo: card.png, text: card.caption });
+        if (card) result = await deliver(lane, { photo: card.png, text: card.caption });
       } else if (slot.kind === "RADAR") {
         const text = await buildRadarText();
-        if (text) result = await deliver(slot.channel, { text });
+        if (text) result = await deliver(lane, { text });
       } else if (slot.kind === "EDUCATION") {
-        result = await deliver(slot.channel, { text: buildEducationText(dayKey) });
+        result = await deliver(lane, { text: buildEducationText(dayKey) });
       } else if (slot.kind === "NEWS") {
         const text = await buildNewsText();
-        if (text) result = await deliver(slot.channel, { text });
+        if (text) result = await deliver(lane, { text });
       } else if (slot.kind === "REPORT") {
         const text = await buildReportText(dayKey);
-        if (text) result = await deliver(slot.channel, { text });
+        if (text) result = await deliver(lane, { text });
       }
     } catch (e) {
       result = { ok: false, transport: "error", error: (e as Error).message };
@@ -257,14 +261,14 @@ async function dispatchDueSlots(): Promise<void> {
       await db.posterLog.create({
         data: {
           kind: slot.kind === "SIGNAL" ? "SIGNAL" : "TEASER",
-          title: `[auto:${slot.channel}] ${slot.slotTitle}`.slice(0, 180),
+          title: `[auto:${lane}] ${slot.slotTitle}`.slice(0, 180),
           sent: true, transport: result.transport,
         },
       });
       fired += 1;
       state.totalSent += 1;
     } else if (result.error && result.error !== "no_content") {
-      console.warn(`[dispatcher] slot "${slot.slotTitle}" (${slot.channel}) failed:`, result.error);
+      console.warn(`[dispatcher] slot "${slot.slotTitle}" (${lane}) failed:`, result.error);
     }
     // no_content → skipped silently; the slot stays pending for the next day.
   }

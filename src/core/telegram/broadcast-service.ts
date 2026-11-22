@@ -19,13 +19,25 @@ export interface ScheduleSlot {
   updatedAt: string;
 }
 
+/**
+ * v2.7 STRICT ROUTING (patch §6-ج):
+ *   VIP lane    → match signal cards + settlement result cards ONLY.
+ *   PUBLIC lane → quant education, bilingual ESPN news, transparency
+ *                 reports, radar digests and system intros ONLY.
+ * A slot's stored channel NEVER overrides the kind rule — the dispatcher
+ * resolves the lane from the kind itself.
+ */
+export function laneForKind(kind: ScheduleSlot["kind"]): "PUBLIC" | "VIP" {
+  return kind === "SIGNAL" ? "VIP" : "PUBLIC";
+}
+
 const DEFAULT_SLOTS: Array<Pick<ScheduleSlot, "slotTitle" | "time" | "channel" | "kind">> = [
   { slotTitle: "رادار صبح — مرور شبانه بازار", time: "11:00", channel: "PUBLIC", kind: "RADAR" },
-  { slotTitle: "سیگنال تنیس ATP/WTA", time: "14:00", channel: "PUBLIC", kind: "SIGNAL" },
+  { slotTitle: "کارت سیگنال تنیس ATP/WTA (VIP)", time: "14:00", channel: "VIP", kind: "SIGNAL" },
   { slotTitle: "پست آموزشی کوانت", time: "16:00", channel: "PUBLIC", kind: "EDUCATION" },
-  { slotTitle: "سیگنال فوتبال اصلی", time: "19:00", channel: "PUBLIC", kind: "SIGNAL" },
-  { slotTitle: "خبر فوری ورزشی", time: "21:00", channel: "PUBLIC", kind: "NEWS" },
-  { slotTitle: "گزارش کارنامه روزانه (VIP)", time: "23:30", channel: "VIP", kind: "REPORT" },
+  { slotTitle: "کارت سیگنال فوتبال اصلی (VIP)", time: "19:00", channel: "VIP", kind: "SIGNAL" },
+  { slotTitle: "خبر فوری دوزبانه ESPN", time: "21:00", channel: "PUBLIC", kind: "NEWS" },
+  { slotTitle: "گزارش شفافیت کارنامه روزانه", time: "23:30", channel: "PUBLIC", kind: "REPORT" },
 ];
 
 function toSlot(r: {
@@ -57,12 +69,14 @@ export async function listSchedule(): Promise<ScheduleSlot[]> {
 export async function createSlot(input: {
   slotTitle: string; time: string; channel?: string; kind?: string;
 }): Promise<ScheduleSlot> {
+  const kind = (["RADAR", "SIGNAL", "EDUCATION", "NEWS", "REPORT"].includes(input.kind ?? "") ? input.kind! : "SIGNAL") as ScheduleSlot["kind"];
   const row = await db.broadcastSchedule.create({
     data: {
       slotTitle: input.slotTitle.slice(0, 120),
       time: normalizeTime(input.time),
-      channel: input.channel === "VIP" ? "VIP" : "PUBLIC",
-      kind: (["RADAR", "SIGNAL", "EDUCATION", "NEWS", "REPORT"].includes(input.kind ?? "") ? input.kind! : "SIGNAL"),
+      // v2.7 strict routing — the channel ALWAYS follows the kind rule.
+      channel: laneForKind(kind),
+      kind,
       enabled: true,
     },
   });
@@ -70,12 +84,20 @@ export async function createSlot(input: {
 }
 
 export async function updateSlot(id: string, patch: {
-  slotTitle?: string; time?: string; channel?: string; enabled?: boolean; markSent?: boolean;
+  slotTitle?: string; time?: string; channel?: string; kind?: string; enabled?: boolean; markSent?: boolean;
 }): Promise<ScheduleSlot | null> {
   const data: Record<string, unknown> = {};
   if (typeof patch.slotTitle === "string" && patch.slotTitle.trim()) data.slotTitle = patch.slotTitle.trim().slice(0, 120);
   if (typeof patch.time === "string") data.time = normalizeTime(patch.time);
-  if (patch.channel === "VIP" || patch.channel === "PUBLIC") data.channel = patch.channel;
+  // v2.7 strict routing — kind changes re-derive the lane; direct channel
+  // patches that violate the kind rule are normalized instead of stored.
+  if (typeof patch.kind === "string" && ["RADAR", "SIGNAL", "EDUCATION", "NEWS", "REPORT"].includes(patch.kind)) {
+    data.kind = patch.kind;
+    data.channel = laneForKind(patch.kind as ScheduleSlot["kind"]);
+  } else if (typeof patch.channel === "string") {
+    const row = await db.broadcastSchedule.findUnique({ where: { id }, select: { kind: true } });
+    if (row) data.channel = laneForKind(row.kind as ScheduleSlot["kind"]);
+  }
   if (typeof patch.enabled === "boolean") data.enabled = patch.enabled;
   // A send is confirmed ONLY through the explicit markSent action (or a real
   // sendPhoto result wired by the caller). Future slots can never be "sent".

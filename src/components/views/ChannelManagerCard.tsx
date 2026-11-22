@@ -62,6 +62,7 @@ export default function ChannelManagerCard() {
   const [vipInput, setVipInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<Lane | null>(null);
+  const [discovering, setDiscovering] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -106,6 +107,35 @@ export default function ChannelManagerCard() {
       toast.error("ذخیره کانال‌ها ناموفق", { description: (e as Error).message });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function discover() {
+    setDiscovering(true);
+    try {
+      const res = await fetch("/api/telegram/channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "discover" }),
+      });
+      const j = (await res.json()) as {
+        ok: boolean; error?: string; autoSaved?: string | null;
+        discovered?: Array<{ handle: string; title?: string; id: string }>;
+        hint?: string;
+      };
+      if (!j.ok) throw new Error(j.error ?? "کشف ناموفق بود");
+      if (j.autoSaved) {
+        toast.success(`کانال VIP کشف و ذخیره شد: ${j.autoSaved}`);
+      } else if (j.hint) {
+        toast.info("کانالی کشف نشد", { description: j.hint });
+      } else {
+        toast.success("کشف انجام شد — کانال‌های یافتشده در وضعیت لاین‌ها دیده می‌شوند");
+      }
+      await load(true);
+    } catch (e) {
+      toast.error("کشف خودکار ناموفق", { description: (e as Error).message });
+    } finally {
+      setDiscovering(false);
     }
   }
 
@@ -249,6 +279,17 @@ export default function ChannelManagerCard() {
         >
           {testing === "DEFAULT" ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
           تست چت پیش‌فرض
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void discover()}
+          disabled={discovering}
+          className="h-8 gap-1 border-violet-500/40 bg-violet-500/5 px-3 text-[11px] text-violet-300 hover:bg-violet-500/10"
+          title="خواندن به‌روزرسانی‌های بات برای یافتن خودکار کانال VIP"
+        >
+          {discovering ? <Loader2 className="size-3 animate-spin" /> : <Radio className="size-3" />}
+          🔍 کشف خودکار کانال VIP
         </Button>
         <span className="text-[10px] leading-4 text-muted-foreground">
           بات باید در هر دو کانال «Admin — Post Messages» باشد؛ در غیر این صورت تلگرام ارسال را رد می‌کند.

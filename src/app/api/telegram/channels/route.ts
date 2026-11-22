@@ -13,6 +13,7 @@ import {
   sendPhotoTo,
   sendMessageTo,
 } from "@/core/telegram/bot-client";
+import { getTelegramBotToken } from "@/core/pipeline/settings";
 import { renderPosterSvg, type PosterSpec } from "@/core/telegram/poster-renderer";
 
 export const dynamic = "force-dynamic";
@@ -83,7 +84,7 @@ export async function GET() {
 }
 
 interface ChannelsBody {
-  action: "save" | "test" | "verify";
+  action: "save" | "test" | "verify" | "discover";
   publicChannelId?: string;
   vipChannelId?: string;
   channel?: Lane;
@@ -133,6 +134,69 @@ export async function POST(req: Request) {
     if (body.action === "verify") {
       const bot = await verifyBot();
       return NextResponse.json({ ok: true, bot });
+    }
+
+    if (body.action === "discover") {
+      // v2.7 — auto-discover channels the bot administers by reading recent
+      // Bot-API updates (channel_post / my_chat_member). When a channel is
+      // found that is NOT the configured PUBLIC lane and VIP is still unset,
+      // it is saved as the VIP lane automatically (honest, reversible — the
+      // admin can overwrite it via save).
+      const token = await getTelegramBotToken();
+      if (!token) {
+        return NextResponse.json({ ok: false, error: "Bot token not configured" }, { status: 400 });
+      }
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 10_000);
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=50`, {
+          signal: ctl.signal, cache: "no-store",
+        });
+        const j = (await res.json()) as {
+          ok: boolean;
+          result?: Array<Record<string, unknown>>;
+        };
+        const chats = new Map<string, { type: string; title?: string; username?: string }>();
+        for (const u of j.result ?? []) {
+          const m = (u.channel_post ?? u.my_chat_member ?? u.message ?? null) as
+            | { chat?: Record<string, unknown> }
+            | null;
+          const c = m?.chat as Record<string, unknown> | undefined;
+          if (c && typeof c.id === "string" && c.type === "channel") {
+            chats.set(String(c.id), {
+              type: "channel",
+              title: typeof c.title === "string" ? c.title : undefined,
+              username: typeof c.username === "string" ? c.username : undefined,
+            });
+          }
+        }
+        const publicLane = await getChannelId("PUBLIC");
+        const vipLane = await getChannelId("VIP");
+        const discovered = [...chats.entries()].map(([id, meta]) => ({
+          id,
+          handle: meta.username ? `@${meta.username}` : id,
+          title: meta.title ?? meta.username ?? id,
+        }));
+        let autoSaved: string | null = null;
+        const candidate = discovered.find(
+          (d) => d.handle !== publicLane && d.id !== publicLane,
+        );
+        if (!vipLane && candidate) {
+          await setSetting(SETTING_KEYS.telegramVipChannelId, candidate.handle);
+          autoSaved = candidate.handle;
+        }
+        return NextResponse.json({
+          ok: true,
+          discovered,
+          autoSaved,
+          hint:
+            discovered.length === 0
+              ? "هیچ به‌روزرسانی‌ای نیست — یک پیام در کانال VIP بنویسید یا بات را یک‌بار Remove/Add ادمین کنید و دوباره کشف را بزنید."
+              : undefined,
+        });
+      } finally {
+        clearTimeout(t);
+      }
     }
 
     if (body.action === "test") {

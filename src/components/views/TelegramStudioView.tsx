@@ -1005,8 +1005,6 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   const [renderTick, setRenderTick] = useState(0);
   const [sending, setSending] = useState(false);
   const [eduOpen, setEduOpen] = useState<Record<string, boolean>>({});
-  // v2.6 — broadcast lane of the manual card send (PUBLIC | VIP | legacy chat)
-  const [sendLane, setSendLane] = useState<"DEFAULT" | "PUBLIC" | "VIP">("PUBLIC");
 
   // MODULE الف — broadcast schedule
   const [slots, setSlots] = useState<ScheduleSlot[]>([]);
@@ -1016,7 +1014,8 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   const [showAddForm, setShowAddForm] = useState(true);
   const [newTitle, setNewTitle] = useState("");
   const [newTime, setNewTime] = useState("");
-  const [newChannel, setNewChannel] = useState<"PUBLIC" | "VIP">("PUBLIC");
+  // v2.7 strict routing — the kind drives the lane; channel is derived server-side.
+  const [newKind, setNewKind] = useState<"SIGNAL" | "EDUCATION" | "NEWS" | "RADAR" | "REPORT">("SIGNAL");
 
   // MODULE ج — ESPN news radar
   const [news, setNews] = useState<NewsItem[]>([]);
@@ -1136,11 +1135,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
         headers: { "Content-Type": "application/json" },
         // v2.6: send=true finally wires the button to the real sendPhoto
         // pipeline, routed to the selected broadcast lane.
-        body: JSON.stringify({ kind: mode, signalId: selectedSignal.id, send: true, channel: sendLane }),
+        body: JSON.stringify({ kind: mode, signalId: selectedSignal.id, send: true, channel: "VIP" }),
       });
       const j = (await res.json()) as TelegramResp;
       if (!j.ok) throw new Error(j.error ?? "پاسخ ناموفق از سرور");
-      if (j.sent) toast.success(`کارت با sendPhoto به لاین ${j.lane ?? sendLane} ارسال شد`);
+      if (j.sent) toast.success(`کارت با sendPhoto به کانال VIP ارسال شد`);
       else
         toast.error("ارسال انجام نشد", {
           description: j.error ?? j.transport ?? "پوستر ساخته شد اما ارسال ناموفق بود",
@@ -1218,7 +1217,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       return;
     }
     await mutateSlot(
-      { action: "create", slotTitle: title, time: t, channel: newChannel, kind: "SIGNAL" },
+      { action: "create", slotTitle: title, time: t, kind: newKind },
       "اسلات جدید به صف پخش اضافه شد",
     );
     setNewTitle("");
@@ -1395,27 +1394,24 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
 
           {/* action buttons */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {/* v2.6 — lane selector chips */}
+            {/* v2.7 strict routing — match/settlement cards ONLY go VIP.
+                The other lanes stay visible but disabled for transparency. */}
             <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-secondary/40 p-1">
-              {(["PUBLIC", "VIP", "DEFAULT"] as const).map((lane) => {
-                const active = sendLane === lane;
-                return (
-                  <button
-                    key={lane}
-                    onClick={() => setSendLane(lane)}
-                    className={cn(
-                      "rounded-md px-2.5 py-1 text-[10px] font-bold transition-all",
-                      active
-                        ? lane === "VIP"
-                          ? "bg-amber-400 text-slate-950"
-                          : "bg-cyan-400 text-slate-950"
-                        : "text-slate-400 hover:text-slate-200",
-                    )}
-                  >
-                    {lane === "PUBLIC" ? "📢 عمومی" : lane === "VIP" ? "👑 VIP" : "💬 چت پیش‌فرض"}
-                  </button>
-                );
-              })}
+              <span className="rounded-md bg-amber-400 px-2.5 py-1 text-[10px] font-bold text-slate-950">
+                👑 VIP
+              </span>
+              <span
+                className="rounded-md px-2.5 py-1 text-[10px] text-slate-600 line-through"
+                title="قانون v2.7: کارت سیگنال/تسویه به کانال عمومی ارسال نمی‌شود"
+              >
+                📢 عمومی
+              </span>
+              <span
+                className="rounded-md px-2.5 py-1 text-[10px] text-slate-600 line-through"
+                title="قانون v2.7: کارت سیگنال/تسویه فقط به VIP می‌رود"
+              >
+                💬 پیش‌فرض
+              </span>
             </div>
             <Button
               onClick={downloadPng}
@@ -1681,13 +1677,16 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                   className="h-8 border-slate-800 bg-secondary/50 text-center text-xs"
                 />
                 <select
-                  value={newChannel}
-                  onChange={(e) => setNewChannel(e.target.value as "PUBLIC" | "VIP")}
+                  value={newKind}
+                  onChange={(e) => setNewKind(e.target.value as typeof newKind)}
                   className="h-8 rounded-md border border-slate-800 bg-secondary/50 px-2 text-xs text-slate-200 outline-none"
-                  aria-label="کانال"
+                  aria-label="نوع پست"
                 >
-                  <option value="PUBLIC">چرخش عمومی</option>
-                  <option value="VIP">VIP</option>
+                  <option value="SIGNAL">کارت سیگنال → VIP</option>
+                  <option value="EDUCATION">آموزش → عمومی</option>
+                  <option value="NEWS">خبر ESPN → عمومی</option>
+                  <option value="RADAR">رادار بازار → عمومی</option>
+                  <option value="REPORT">گزارش شفافیت → عمومی</option>
                 </select>
                 <Button
                   onClick={() => void addSlot()}

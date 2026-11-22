@@ -24,6 +24,16 @@ export async function POST(req: Request) {
       body.channel === "PUBLIC" || body.channel === "VIP" || body.channel === "DEFAULT"
         ? body.channel
         : "DEFAULT";
+    // v2.7 STRICT ROUTING — match/settlement cards may ONLY target the VIP
+    // lane. Any attempt to push a SIGNAL/WIN/LOSS card to PUBLIC/DEFAULT is
+    // rejected honestly with a clear error.
+    const cardKind = body.kind === "SIGNAL" || body.kind === "WIN" || body.kind === "LOSS";
+    if (cardKind && body.send && lane !== "VIP") {
+      return NextResponse.json(
+        { ok: false, error: "کارت سیگنال/تسویه فقط به کانال VIP ارسال می‌شود (قانون مسیریابی v2.7)" },
+        { status: 400 },
+      );
+    }
     const built = await buildSpec(body);
     const spec = built.spec;
     const svg = renderPosterSvg(spec);
