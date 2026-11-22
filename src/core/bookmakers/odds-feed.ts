@@ -8,7 +8,10 @@
 import type { FeedMatch, TeamStat } from "@/core/types";
 import { americanToDecimal } from "@/core/math/devig";
 
+export { americanToDecimal };
+
 const ESPN_SITE = "https://site.api.espn.com/apis/site/v2/sports";
+const ESPN_CORE_V2 = "https://sports.core.api.espn.com/v2/sports";
 
 /** 19 football leagues monitored (3 of them are supervisor-blacklisted). */
 export const FOOTBALL_LEAGUES = [
@@ -264,13 +267,18 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
 }
 
 /**
- * Tennis feed — CURRENT tournaments + the past 7 days of REAL ATP/WTA results
- * (the Hawk-Eye 3D lab always has a genuine match to render, even with no
- * pre-match singles scheduled today). ESPN tennis scoreboard accepts a range.
+ * Tennis feed — v2.7: the past 30 days of REAL ATP/WTA results + 1 day ahead.
+ * The widened window keeps the ledger alive through off-season weeks (ATP
+ * Finals, WTA Finals, Davis Cup and the last 30 days of tour results all
+ * land in the backfill), and the Hawk-Eye 3D lab always has genuine matches
+ * to render. ESPN tennis scoreboard accepts a range.
  */
+export const TENNIS_RANGE: [pastDays: number, futureDays: number] = [30, 1];
+
 export async function fetchTennisFeed(): Promise<FeedMatch[]> {
-  const from = new Date(Date.now() - 7 * 86400_000);
-  const range = `${dayKey(from)}-${dayKey(new Date(Date.now() + 3 * 86400_000))}`;
+  const [pastDays, futureDays] = TENNIS_RANGE;
+  const from = new Date(Date.now() - pastDays * 86400_000);
+  const range = `${dayKey(from)}-${dayKey(new Date(Date.now() + futureDays * 86400_000))}`;
   const jobs = (["atp", "wta"] as const).map(async (tour) => {
     const j = await fetchJsonRetry(`${ESPN_SITE}/tennis/${tour}/scoreboard?dates=${range}`);
     if (!j) return [];
@@ -278,6 +286,103 @@ export async function fetchTennisFeed(): Promise<FeedMatch[]> {
     return events.flatMap((e) => parseTennisEvent(e, tour));
   });
   return (await Promise.all(jobs)).flat();
+}
+
+/**
+ * v2.7 — THREE-LAYER ODDS CASCADE
+ * ================================
+ * Layer 1 (primary):   The Odds API v4 — 1xBet + Pinnacle, 45-min credit shield.
+ * Layer 2 (backup):    OddsPapi v4 (api.oddspapi.io) — free historical backup.
+ * Layer 3 (keyless):   ESPN Core API v2 per-event public odds — NO key, NO quota.
+ *
+ * Goal: the system must never fall back to bare MODEL-FAIR prices while ANY
+ * public market source is reachable. Each layer keeps honest provenance.
+ */
+
+export interface NormalizedOddsQuote {
+  source: "THE_ODDS_API" | "ODDSPAPI" | "ESPN_CORE_PUBLIC";
+  bookmaker: string;
+  homeOdds?: number;
+  drawOdds?: number;
+  awayOdds?: number;
+  over25Odds?: number;
+  under25Odds?: number;
+  fetchedAt: string;
+}
+
+/**
+ * Public, Zero-Key Live Market Odds from ESPN Core API v2 (Layer 3).
+ * Works for Soccer & Tennis with NO API key and NO monthly credit cap.
+ * 30-min revalidation cache keeps the ingest loop cheap.
+ */
+export async function fetchEspnPublicEventOdds(
+  sport: "soccer" | "tennis",
+  leagueSlug: string,
+  eventId: string,
+): Promise<NormalizedOddsQuote | null> {
+  const url = `${ESPN_CORE_V2}/${sport}/leagues/${leagueSlug}/events/${eventId}/competitions/${eventId}/odds`;
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "NeoBetQuantPro/2.7" },
+      next: { revalidate: 1800 }, // 30-min cache
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      items?: Array<Record<string, unknown>>;
+    };
+    const item = data?.items?.[0];
+    if (!item) return null;
+
+    const dec = (ml: unknown): number | undefined => {
+      const raw = ml as { moneyLine?: number } | undefined;
+      const am = typeof raw?.moneyLine === "number" ? raw.moneyLine : undefined;
+      return americanToDecimal(am);
+    };
+    const homeOdds = dec(item?.homeTeamOdds);
+    const awayOdds = dec(item?.awayTeamOdds);
+    const drawOdds = dec(item?.drawOdds);
+
+    if (homeOdds == null && awayOdds == null) return null;
+
+    return {
+      source: "ESPN_CORE_PUBLIC",
+      bookmaker: ((item?.provider as Record<string, unknown> | undefined)?.name as string) || "ESPN Market Consensus",
+      homeOdds,
+      drawOdds,
+      awayOdds,
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * OddsPapi v4 (Layer 2) — free backup odds feed (api.oddspapi.io).
+ * Key: DB setting first, then ODDSPAPI_API_KEY in the git-ignored .env.local.
+ * Returns rows in the same name-keyed LiveOddsRow map format as Layer 1.
+ */
+export async function fetchOddsPapiRows(apiKey: string | null): Promise<Map<string, LiveOddsRow>> {
+  const out = new Map<string, LiveOddsRow>();
+  if (!apiKey) return out;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const url = `https://api.oddspapi.io/v4/odds?sport=football&bookmaker=1xbet&market=1x2&apiKey=${encodeURIComponent(apiKey)}`;
+  const j = await fetchJsonRetry(url, 1, 8000);
+  if (!j) return out;
+  const events = (Array.isArray(j) ? j : (j as { data?: Array<Record<string, unknown>> }).data) ?? [];
+  for (const ev of events) {
+    const home = (ev.homeTeam as string) ?? (ev.home_team as string) ?? "";
+    const away = (ev.awayTeam as string) ?? (ev.away_team as string) ?? "";
+    if (!home || !away) continue;
+    const row: LiveOddsRow = { book: "1XBET_LIVE" };
+    const odds = (ev.odds as Record<string, unknown> | undefined) ?? {};
+    const num = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 1 ? Number(v) : undefined);
+    row.home = num(odds["1"] ?? odds.home);
+    row.draw = num(odds.X ?? odds.draw);
+    row.away = num(odds["2"] ?? odds.away);
+    if (row.home && row.away) out.set(`${norm(home)}|${norm(away)}|1XBET_LIVE`, row);
+  }
+  return out;
 }
 
 /**

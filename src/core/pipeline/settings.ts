@@ -45,6 +45,18 @@ export async function getOddsApiKey(): Promise<string | null> {
 }
 
 /**
+ * OddsPapi v4 (oddsapi.io) key resolution order — the Layer-2 backup feed:
+ * 1. DB setting (oddsApiIoKey)
+ * 2. `.env.local` ODDSPAPI_API_KEY (server-only secret, git-ignored)
+ */
+export async function getOddsPapiApiKey(): Promise<string | null> {
+  const fromDb = await getSetting(SETTING_KEYS.oddsApiIoKey);
+  if (fromDb && fromDb.trim()) return fromDb.trim();
+  const fromEnv = process.env.ODDSPAPI_API_KEY;
+  return fromEnv && fromEnv.trim() ? fromEnv.trim() : null;
+}
+
+/**
  * Telegram bot token resolution order:
  * 1. DB setting (saved from the Settings panel)
  * 2. `.env.local` TELEGRAM_BOT_TOKEN (server-only secret, git-ignored)

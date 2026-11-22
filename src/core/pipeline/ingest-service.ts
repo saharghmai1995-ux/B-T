@@ -7,6 +7,7 @@
 import { db } from "@/lib/db";
 import type { FeedMatch, MatchContext, TeamStat } from "@/core/types";
 import { gatherFeed, findTeamStat, leagueAverageGoals, type GatheredPack } from "./feed-gatherer";
+import { fetchEspnPublicEventOdds } from "@/core/bookmakers/odds-feed";
 import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
 import { lockSignal } from "@/core/ledger/sha256-chain";
 import { resolveSelection } from "@/core/ledger/settlement-engine";
@@ -175,7 +176,17 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       const sh = findTeamStat(pack.standings, m.leagueCode, m.homeName);
       const sa = findTeamStat(pack.standings, m.leagueCode, m.awayName);
       const avg = leagueAverageGoals(pack.standings[m.leagueCode]);
-      const f = buildFootballFactory(ctx, sh, sa, m.refOdds ?? null, avg);
+      // v2.7 Layer 3 — keyless ESPN Core public odds: when the scoreboard
+      // carries no reference book (and Layers 1/2 missed this fixture), the
+      // public per-event odds endpoint keeps the market anchor alive.
+      let ref = m.refOdds ?? null;
+      if (!ref) {
+        const pub = await fetchEspnPublicEventOdds("soccer", m.leagueCode, m.espnEventId);
+        if (pub?.homeOdds != null && pub.awayOdds != null) {
+          ref = { home: pub.homeOdds, away: pub.awayOdds, draw: pub.drawOdds };
+        }
+      }
+      const f = buildFootballFactory(ctx, sh, sa, ref, avg);
       quotes += await persistQuotes(id, f.quotes);
       if (f.single && !have.has(`${id}|${f.single.marketKey}|${f.single.selection}`)) {
         singles += await persistSingle(f.single, bank);

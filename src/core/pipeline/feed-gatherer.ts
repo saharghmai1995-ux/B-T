@@ -10,9 +10,10 @@
 import type { FeedMatch, FeedPack, TeamStat } from "@/core/types";
 import {
   fetchFootballFeed, fetchFootballStandings, fetchTennisFeed,
-  fetchLive1xBetOdds, fetchOddsApiIoRows, FOOTBALL_LEAGUES, getOddsFeedStats, type LiveOddsRow,
+  fetchLive1xBetOdds, fetchOddsApiIoRows, fetchOddsPapiRows,
+  FOOTBALL_LEAGUES, getOddsFeedStats, type LiveOddsRow,
 } from "@/core/bookmakers/odds-feed";
-import { getOddsApiKey, getSetting, SETTING_KEYS } from "./settings";
+import { getOddsApiKey, getOddsPapiApiKey, getSetting, SETTING_KEYS } from "./settings";
 
 export interface GatheredPack extends FeedPack {
   standings: Record<string, TeamStat[]>;
@@ -40,28 +41,35 @@ export async function gatherFeed(): Promise<GatheredPack> {
     else notes.push(`No standings for ${lg}`);
   }));
 
-  // Live book prices — both providers are optional; rows merge into one map.
-  // The Odds API v4 key: DB setting first, then the git-ignored `.env.local`
-  // secret (THE_ODDS_API_KEY). Never logged in full, never sent to the client.
+  // Live book prices — v2.7 THREE-LAYER CASCADE. Rows merge into one map;
+  // higher layers win on conflict so provenance stays honest:
+  //   Layer 1 — The Odds API v4 (1xBet+Pinnacle, 45-min credit shield)
+  //   Layer 2 — OddsPapi v4 (api.oddspapi.io, free backup)
+  //   Layer 3 — ESPN Core public odds are attached per-event later in the
+  //             ingest pipeline (keyless, only for fixtures with no Layer1/2 row).
   const oddsKey = (await getOddsApiKey()) ?? null;
+  const papiKey = (await getOddsPapiApiKey()) ?? null;
   const ioKey = await getSetting(SETTING_KEYS.oddsApiIoKey);
-  const [oddsApiRows, ioRows] = await Promise.all([
+  const [oddsApiRows, papiRows, ioRows] = await Promise.all([
     fetchLive1xBetOdds(oddsKey),
-    fetchOddsApiIoRows(ioKey || null),
+    fetchOddsPapiRows(papiKey),
+    ioKey ? fetchOddsApiIoRows(ioKey) : Promise.resolve(new Map<string, LiveOddsRow>()),
   ]);
   const liveOdds = new Map<string, LiveOddsRow>();
-  for (const [k, v] of ioRows) liveOdds.set(k, v);
-  for (const [k, v] of oddsApiRows) liveOdds.set(k, v); // v4 wins on conflict
+  for (const [k, v] of papiRows) liveOdds.set(k, v); // Layer 2 base
+  for (const [k, v] of ioRows) liveOdds.set(k, v); // legacy odds-api.io extra
+  for (const [k, v] of oddsApiRows) liveOdds.set(k, v); // Layer 1 wins on conflict
   if (oddsKey) {
     const stats = getOddsFeedStats();
-    notes.push(`The Odds API v4 live rows: ${oddsApiRows.size} (soccer+tennis, 45m cache)`);
+    notes.push(`Layer1 The Odds API v4 rows: ${oddsApiRows.size} (soccer+tennis, 45m cache)`);
     if (stats.remainingCredits) notes.push(`Odds API quota remaining: ${stats.remainingCredits}`);
     if (stats.cachedSportKeys.length) notes.push(`Odds API cached keys: ${stats.cachedSportKeys.join(", ")}`);
     if (stats.lastError) notes.push(`Odds API last error: ${stats.lastError}`);
   } else {
-    notes.push("No The Odds API key — 1xBet prices run in honest MODEL-FAIR mode");
+    notes.push("Layer1 unavailable (no key) — Layer2 OddsPapi + Layer3 ESPN Core keep prices live");
   }
-  if (ioKey) notes.push(`Odds-API.io live rows: ${ioRows.size}`);
+  notes.push(`Layer2 OddsPapi rows: ${papiRows.size}`);
+  if (ioKey) notes.push(`Legacy odds-api.io rows: ${ioRows.size}`);
 
   return {
     fetchedAt: new Date(),
