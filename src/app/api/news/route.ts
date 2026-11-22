@@ -76,20 +76,23 @@ export async function GET() {
     })
     .slice(0, 24);
 
-  // v2.7 bilingual layer — translate the top 8 (bounded latency, cached).
+  // v2.7 bilingual layer — translate the top 8 with LIMITED concurrency (3
+  // at a time). Parallel bursts overload the LLM gateway; batches keep the
+  // success rate high. Results are cached, so only the first load pays.
   const { translateNewsPair } = await import("@/core/telegram/translate");
   const TOP_FA = 8;
-  const faResults = await Promise.allSettled(
-    items.slice(0, TOP_FA).map((n) => translateNewsPair(n.headline, n.description)),
+  const fa: Array<{ headlineFa: string | null; descriptionFa: string | null }> = new Array(TOP_FA).fill(null).map(() => ({ headlineFa: null, descriptionFa: null }));
+  const BATCH = 3;
+  for (let i = 0; i < TOP_FA; i += BATCH) {
+    const slice = items.slice(i, i + BATCH);
+    const settled = await Promise.allSettled(slice.map((n) => translateNewsPair(n.headline, n.description)));
+    settled.forEach((r, k) => {
+      if (r.status === "fulfilled") fa[i + k] = r.value;
+    });
+  }
+  const withFa = items.map((n, i) =>
+    i < TOP_FA ? { ...n, ...fa[i] } : { ...n, headlineFa: null, descriptionFa: null },
   );
-  const withFa = items.map((n, i) => {
-    if (i >= TOP_FA) return { ...n, headlineFa: null, descriptionFa: null };
-    const r = faResults[i];
-    if (r.status === "fulfilled") {
-      return { ...n, headlineFa: r.value.headlineFa, descriptionFa: r.value.descriptionFa };
-    }
-    return { ...n, headlineFa: null, descriptionFa: null };
-  });
 
   return NextResponse.json({ ok: true, items: withFa, fetchedAt: new Date().toISOString() });
 }
