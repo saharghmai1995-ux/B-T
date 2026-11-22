@@ -24,7 +24,8 @@ export async function POST(req: Request) {
       body.channel === "PUBLIC" || body.channel === "VIP" || body.channel === "DEFAULT"
         ? body.channel
         : "DEFAULT";
-    const spec = await buildSpec(body);
+    const built = await buildSpec(body);
+    const spec = built.spec;
     const svg = renderPosterSvg(spec);
     const png = await sharp(Buffer.from(svg)).png().toBuffer();
     const base64 = png.toString("base64");
@@ -32,7 +33,12 @@ export async function POST(req: Request) {
     let transport = "preview";
     let sendError: string | undefined;
 
-    if (body.send) {
+    if (built.logosMissing) {
+      // v2.7 hard rule — honest refusal: no card leaves without club artwork.
+      sent = false;
+      transport = "logos_missing";
+      sendError = "کارت بدون لوگو/پرچم باشگاه ارسال نمی‌شود — artwork واقعی در فید نیست";
+    } else if (body.send) {
       const chatId = await resolveBroadcastTarget(lane);
       if (chatId) {
         const result = await sendPhotoTo(chatId, new Uint8Array(png));
@@ -63,7 +69,7 @@ export async function POST(req: Request) {
 }
 
 /** Build the poster spec from a stored signal (or inline overrides). */
-async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
+async function buildSpec(body: TelegramBody): Promise<{ spec: PosterSpec; logosMissing: boolean }> {
   const base: PosterSpec = {
     kind: body.kind ?? "SIGNAL",
     matchInfo: "Fixture pending — live feed sync",
@@ -79,7 +85,8 @@ async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
         match: {
           select: {
             homeName: true, awayName: true, league: true, venue: true,
-            startTime: true, surface: true,
+            startTime: true, surface: true, sport: true,
+            homeLogo: true, awayLogo: true,
           },
         },
       },
@@ -89,6 +96,7 @@ async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
       base.homeName = s.match.homeName;
       base.awayName = s.match.awayName;
       base.competition = s.match.league;
+      base.sport = s.match.sport as "football" | "tennis";
       base.marketLabel = s.marketLabel;
       base.selection = s.selection;
       base.price = s.price;
@@ -99,7 +107,13 @@ async function buildSpec(body: TelegramBody): Promise<PosterSpec> {
       base.hash = s.shaHash;
       base.kickoffIso = s.match.startTime.toISOString();
       base.venue = s.match.venue ?? (s.match.surface ? `${s.match.surface} Court` : undefined);
+      // v2.7 hard rule — a match card NEVER leaves without both club logos/
+      // flags. Missing artwork blocks the send honestly (no initials fallback
+      // ever reaches a channel).
+      if (body.send && (!s.match.homeLogo || !s.match.awayLogo)) {
+        return { spec: base, logosMissing: true };
+      }
     }
   }
-  return base;
+  return { spec: base, logosMissing: false };
 }

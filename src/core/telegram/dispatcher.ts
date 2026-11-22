@@ -81,11 +81,14 @@ async function buildSignalCard(): Promise<{ png: Uint8Array; caption: string; ti
         select: {
           homeName: true, awayName: true, league: true, venue: true,
           startTime: true, surface: true, sport: true,
+          homeLogo: true, awayLogo: true,
         },
       },
     },
   });
   if (!s) return null;
+  // v2.7 hard rule — a match card never broadcasts without both club logos.
+  if (!s.match.homeLogo || !s.match.awayLogo) return null;
   const kickoff = s.match.startTime;
   const hoursAhead = (kickoff.getTime() - Date.now()) / 3_600_000;
   if (hoursAhead < 0.5 || hoursAhead > 96) return null; // stale or too far — skip honestly
@@ -96,6 +99,7 @@ async function buildSignalCard(): Promise<{ png: Uint8Array; caption: string; ti
     homeName: s.match.homeName,
     awayName: s.match.awayName,
     competition: s.match.league,
+    sport: s.match.sport as "football" | "tennis",
     marketLabel: s.marketLabel,
     selection: s.selection,
     price: s.price,

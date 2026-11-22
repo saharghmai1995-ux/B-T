@@ -436,6 +436,8 @@ function drawBallIcon(
   r: number,
   sport: string,
 ) {
+  // v2.7 — distinct balls: tennis = neon-yellow with curved seams;
+  // football = classic white ball with black pentagon spots.
   ctx.save();
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -444,13 +446,39 @@ function drawBallIcon(
   ctx.strokeStyle = "rgba(15,23,42,0.7)";
   ctx.lineWidth = 2;
   ctx.stroke();
-  ctx.strokeStyle = sport === "tennis" ? "rgba(255,255,255,0.9)" : "rgba(15,23,42,0.75)";
-  ctx.beginPath();
-  ctx.arc(x - r * 0.75, y - r * 0.5, r * 0.85, Math.PI * 0.15, Math.PI * 0.85);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(x + r * 0.75, y + r * 0.5, r * 0.85, Math.PI * 1.15, Math.PI * 1.85);
-  ctx.stroke();
+  if (sport === "tennis") {
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(x - r * 0.85, y - r * 0.5, r * 0.9, Math.PI * 0.15, Math.PI * 0.85);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + r * 0.85, y + r * 0.5, r * 0.9, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.stroke();
+  } else {
+    // central pentagon + five spokes — classic football look
+    ctx.fillStyle = "rgba(15,23,42,0.82)";
+    const pr = r * 0.34;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+      const px = x + pr * Math.cos(a);
+      const py = y + pr * Math.sin(a);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(15,23,42,0.75)";
+    ctx.lineWidth = 2.5;
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5 + Math.PI / 5;
+      ctx.beginPath();
+      ctx.moveTo(x + pr * Math.cos(-Math.PI / 2 + (i * 2 * Math.PI) / 5), y + pr * Math.sin(-Math.PI / 2 + (i * 2 * Math.PI) / 5));
+      ctx.lineTo(x + r * 0.95 * Math.cos(a), y + r * 0.95 * Math.sin(a));
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
@@ -517,6 +545,35 @@ function drawPoster(
 
   // 2) top chrome
   drawTopChrome(ctx, w, accent, MODE_TAGLINE[spec.mode]);
+
+  // v2.7 — BIG status badge (42px ExtraBold, colored box) top-center:
+  // NEW SIGNAL cyan / WON emerald / LOST rose.
+  const badgeText = spec.mode === "SIGNAL" ? "NEW SIGNAL" : spec.mode === "WIN" ? "WON" : "LOST";
+  const badgeColor = spec.mode === "SIGNAL" ? "#22D3EE" : spec.mode === "WIN" ? "#10B981" : "#F43F5E";
+  {
+    ctx.save();
+    ctx.font = "900 42px Arial";
+    const tw = ctx.measureText(badgeText).width;
+    const bw = tw + 72;
+    const bx = w / 2 - bw / 2;
+    const by = 62;
+    const bGrad = ctx.createLinearGradient(bx, by, bx + bw, by + 66);
+    bGrad.addColorStop(0, hexToRgba(badgeColor, 0.22));
+    bGrad.addColorStop(1, hexToRgba(badgeColor, 0.08));
+    rr(ctx, bx, by, bw, 66, 33);
+    ctx.fillStyle = bGrad;
+    ctx.fill();
+    ctx.strokeStyle = badgeColor;
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+    ctx.shadowColor = hexToRgba(badgeColor, 0.55);
+    ctx.shadowBlur = 22;
+    ctx.textAlign = "center";
+    ctx.fillStyle = badgeColor;
+    ctx.fillText(badgeText, w / 2, by + 47);
+    ctx.restore();
+  }
+
   ctx.textAlign = "center";
   ctx.font = "bold 22px Arial";
   ctx.fillStyle = GOLD;
@@ -575,10 +632,8 @@ function drawPoster(
   ctx.textAlign = "center";
   ctx.fillStyle = "#FFFFFF";
   ctx.fillText(spec.marketEn, w / 2, 556);
-  ctx.direction = "rtl";
-  ctx.font = "24px Tahoma, Arial, sans-serif";
-  ctx.fillStyle = "#8FA0B8";
-  ctx.fillText(trunc(spec.marketFa, 60), w / 2, 598);
+  // v2.7 — the image is 100% English; Persian explanation lives ONLY in the
+  // Telegram message caption (see sendNow / dispatcher caption builders).
   ctx.direction = "ltr";
 
   // 5) stat boxes (y ~660-860)
@@ -972,6 +1027,10 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   const drawTokenRef = useRef(0);
   const signalRef = useRef<AppSignal | null>(null);
   const newsRef = useRef<NewsItem[]>([]);
+  // v2.7 hard rule — a match card may only be SENT after BOTH club logos/
+  // flags actually loaded into the canvas. Initials-fallback previews are
+  // never allowed to reach a channel.
+  const logosReadyRef = useRef(false);
 
   const pool = useMemo<Array<AppSignal>>(() => {
     if (mode === "SIGNAL") return openSignals.length ? openSignals : settledSignals;
@@ -1004,12 +1063,14 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
     if (variant.type === "edu") {
       const topic = EDU_TOPICS.find((t) => t.id === variant.topicId) ?? EDU_TOPICS[0];
       drawEducationalPoster(ctx, topic);
+      logosReadyRef.current = true; // edu posters carry no club artwork
       return;
     }
     if (variant.type === "news") {
       const item = newsRef.current.find((n) => n.id === variant.itemId);
       if (item) drawNewsPoster(ctx, item);
       else drawPoster(ctx, POSTER_W, POSTER_H, buildPosterSpec(null, mode));
+      logosReadyRef.current = true; // news posters carry no club artwork
       return;
     }
 
@@ -1023,10 +1084,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
     ];
     void Promise.allSettled(jobs).then(([hRes, aRes]) => {
       if (token !== drawTokenRef.current) return;
-      drawPoster(ctx, POSTER_W, POSTER_H, spec, {
-        home: hRes.status === "fulfilled" ? hRes.value : null,
-        away: aRes.status === "fulfilled" ? aRes.value : null,
-      });
+      const homeImg = hRes.status === "fulfilled" ? hRes.value : null;
+      const awayImg = aRes.status === "fulfilled" ? aRes.value : null;
+      // v2.7 — send gate: BOTH real logos must exist AND have loaded.
+      logosReadyRef.current = Boolean(spec.homeLogo && spec.awayLogo && homeImg && awayImg);
+      drawPoster(ctx, POSTER_W, POSTER_H, spec, { home: homeImg, away: awayImg });
     });
      
   }, [variant, selectedSignalId, mode, renderTick, state.generatedAt]);
@@ -1058,6 +1120,13 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   async function sendNow() {
     if (!selectedSignal) {
       toast.warning("ابتدا یک مسابقه انتخاب کنید");
+      return;
+    }
+    // v2.7 hard rule — no club artwork, no send. Honest refusal, no fallback.
+    if (!selectedSignal.homeLogo || !selectedSignal.awayLogo || !logosReadyRef.current) {
+      toast.error("ارسال مجاز نیست — لوگو/پرچم هر دو باشگاه باید بارگذاری شده باشد", {
+        description: "قانون v2.7: کارت بدون artwork واقعی هرگز به کانال ارسال نمی‌شود.",
+      });
       return;
     }
     setSending(true);

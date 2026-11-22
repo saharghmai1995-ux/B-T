@@ -11,6 +11,7 @@ export interface PosterSpec {
   kind: PosterKind;
   matchInfo: string; // e.g. "Arsenal vs Brentford"
   competition?: string; // league / tournament display name
+  sport?: "football" | "tennis"; // v2.7 — drives the ball icon above VS
   marketLabel?: string; // official English 1xBet market
   selection?: string;
   price?: number;
@@ -98,6 +99,47 @@ export function renderPosterSvg(spec: PosterSpec): string {
     <text x="${cx}" y="${cy + 24}" text-anchor="middle" font-family="Arial" font-size="72" font-weight="800" fill="hsl(${hue} 95% 72%)">${esc(initialsOf(name))}</text>`;
   };
 
+  // v2.7 — sport-specific ball above the VS crosshair (football pentagon
+  // pattern vs tennis seams), driven by spec.sport.
+  const ballSvg = (() => {
+    const bx = 540;
+    const by = 246;
+    if (spec.sport === "tennis") {
+      return `
+  <g>
+    <circle cx="${bx}" cy="${by}" r="24" fill="#B7F264" stroke="rgba(15,23,42,0.7)" stroke-width="2"/>
+    <path d="M ${bx - 22} ${by - 12} Q ${bx} ${by + 2} ${bx - 22} ${by + 16}" fill="none" stroke="#FFFFFF" stroke-width="3"/>
+    <path d="M ${bx + 22} ${by - 12} Q ${bx} ${by + 2} ${bx + 22} ${by + 16}" fill="none" stroke="#FFFFFF" stroke-width="3"/>
+  </g>`;
+    }
+    const pr = 9;
+    const pent = Array.from({ length: 5 }, (_, i) => {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+      return `${bx + pr * Math.cos(a)},${by + pr * Math.sin(a)}`;
+    }).join(" ");
+    const spokes = Array.from({ length: 5 }, (_, i) => {
+      const a0 = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+      const a1 = a0 + Math.PI / 5;
+      return `<line x1="${(bx + pr * Math.cos(a0)).toFixed(1)}" y1="${(by + pr * Math.sin(a0)).toFixed(1)}" x2="${(bx + 22 * Math.cos(a1)).toFixed(1)}" y2="${(by + 22 * Math.sin(a1)).toFixed(1)}" stroke="rgba(15,23,42,0.75)" stroke-width="2.5"/>`;
+    }).join("");
+    return `
+  <g>
+    <circle cx="${bx}" cy="${by}" r="24" fill="#F1F5F9" stroke="rgba(15,23,42,0.7)" stroke-width="2"/>
+    <polygon points="${pent}" fill="rgba(15,23,42,0.82)"/>
+    ${spokes}
+  </g>`;
+  })();
+
+  // v2.7 — BIG status badge top-center (42px, 900 weight, colored box).
+  const badgeText = spec.kind === "SIGNAL" ? "NEW SIGNAL" : spec.kind === "WIN" ? "WON" : spec.kind === "LOSS" ? "LOST" : "NEWS";
+  const badgeColor = spec.kind === "SIGNAL" ? "#22D3EE" : spec.kind === "WIN" ? "#10B981" : spec.kind === "LOSS" ? "#F43F5E" : "#F59E0B";
+  const badgeWidth = badgeText.length * 30 + 72;
+  const badgeSvg = `
+  <g>
+    <rect x="${540 - badgeWidth / 2}" y="62" width="${badgeWidth}" height="66" rx="33" fill="${badgeColor}" fill-opacity="0.14" stroke="${badgeColor}" stroke-width="3.5"/>
+    <text x="540" y="109" text-anchor="middle" font-family="Arial" font-size="42" font-weight="900" fill="${badgeColor}">${esc(badgeText)}</text>
+  </g>`;
+
   const infoBarY = 1015;
   const infoBar = info.map((it, i) => {
     const bx = 72 + i * 312;
@@ -154,8 +196,10 @@ export function renderPosterSvg(spec: PosterSpec): string {
   <text x="72" y="96" font-family="Arial" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="2">NEOBET QUANT PRO</text>
   <text x="1008" y="96" text-anchor="end" font-family="Arial" font-size="30" font-weight="700" fill="${th.accent}" letter-spacing="2">@aineobet</text>
   <text x="72" y="140" font-family="Arial" font-size="24" fill="#8FA3BF" letter-spacing="5">${esc(th.tag)}</text>
+  ${badgeSvg}
 
   <!-- face-off zone -->
+  ${ballSvg}
   ${monogram(home, 262, 328)}
   ${monogram(away, 818, 328)}
   <circle cx="540" cy="318" r="40" fill="#0B1220" stroke="#1E2A3D"/>
