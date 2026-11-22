@@ -90,10 +90,28 @@ export function marketsFor(sport: "football" | "tennis"): MarketDef[] {
 /** Toxic leagues never signalled (hard supervisor blacklist). */
 export const TOXIC_LEAGUES = new Set(["esp.2", "usa.1", "fifa.friendly"]);
 
-/** Tennis tournaments below Main Tour level are excluded from verified signals. */
-export function isEliteTennisTournament(league: string): boolean {
-  const banned = /ITF|Challenger|25K|100K|15K|40K|60K|80K/i;
-  return !banned.test(league);
+/**
+ * v2.7 — Elite tennis tournament guard (inclusive per the v2.7 patch):
+ * ATP / WTA main tour, Grand Slams, Davis Cup, Billie Jean King Cup,
+ * United Cup, Challengers and all *Finals* events qualify. Only the pure
+ * ITF circuit (15K/25K/40K/60K/80K/100K without Finals naming) stays out.
+ */
+export function isEliteTennisTournament(leagueName: string): boolean {
+  const norm = (leagueName || "").toLowerCase();
+  return (
+    norm.includes("atp") ||
+    norm.includes("wta") ||
+    norm.includes("grand slam") ||
+    norm.includes("australian open") ||
+    norm.includes("roland garros") ||
+    norm.includes("wimbledon") ||
+    norm.includes("us open") ||
+    norm.includes("davis cup") ||
+    norm.includes("billie jean king") ||
+    norm.includes("united cup") ||
+    norm.includes("challenger") ||
+    norm.includes("finals")
+  );
 }
 
 /**

@@ -23,16 +23,16 @@ const EV_THRESHOLD = 0.045;
  * active — a LIVE 1xBet price with EV >= +4.0% is signalable even when the
  * tournament is not elite. */
 export const LIVE_EV_THRESHOLD = 0.04;
-/** Model-vs-market honesty guard: when the rank-based model diverges from the
- * LIVE book probability by more than 12pp, the "edge" is model noise — the
- * quote is skipped (no synthetic alpha can be manufactured from rank gap). */
-export const LIVE_MAX_MODEL_MARKET_DIVERGENCE = 0.12;
+/** Model-vs-market honesty guard (v2.7): divergence tolerance raised from
+ * 12pp to 18pp so live edges are not over-filtered — the guard still blocks
+ * saturated rank-noise "edges" while letting real live value through. */
+export const LIVE_MAX_MODEL_MARKET_DIVERGENCE = 0.18;
 const PRICE_MIN = 1.72;
 const PRICE_MAX = 2.2;
 const ANCHOR_PROB = 0.79;
 const ANCHOR_PRICE_MIN = 1.34;
 const ANCHOR_PRICE_MAX = 1.5;
-const TOP_RANK = 100;
+const TOP_RANK = 150; // v2.7: raised from 100 — Challenger / Davis Cup coverage
 
 /** Build every whitelisted quote for one tennis fixture. */
 export function buildTennisQuotes(
@@ -156,10 +156,10 @@ export function pickAnchorsTennis(match: MatchContext, quotes: TennisQuote[]): T
 }
 
 export function supervisorVetoTennis(match: MatchContext, q: TennisQuote): string | null {
-  if (!isEliteTennisTournament(match.league) && q.source !== "LIVE") return "Non-Main-Tour tournament (ITF/Challenger)";
+  if (!isEliteTennisTournament(match.league) && q.source !== "LIVE") return "Non-Main-Tour tournament (ITF only)";
   if (q.modelProb >= 0.955) return "Model saturation (prob >= 95.5%)";
   if (q.source === "LIVE" && q.modelProb - q.trueProb > LIVE_MAX_MODEL_MARKET_DIVERGENCE) {
-    return "Model-market divergence > 12pp — edge is model noise, not value";
+    return "Model-market divergence > 18pp — edge is model noise, not value";
   }
   return null;
 }
