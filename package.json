@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "scripts": {
-    "dev": "[ -f .env ] || printf 'DATABASE_URL=\"file:%s/db/custom.db\"\n' \"$(pwd)\" > .env; mkdir -p db; prisma db push --accept-data-loss >/dev/null 2>&1; next dev -p 3000 2>&1 | tee dev.log",
+    "dev": "[ -f .env ] || printf 'DATABASE_URL=\"file:%s/db/custom.db\"\n' \"$(pwd)\" > .env; mkdir -p db; prisma db push --accept-data-loss >/dev/null 2>&1; next dev -p 3000 > dev.log 2>&1",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
