@@ -40,7 +40,8 @@ import {
 } from "@/components/shared/primitives";
 import { useAppStore } from "@/lib/store";
 import { fmtUnits, fmtDateTimeFa, lineLabel, statusColor } from "@/lib/api-types";
-import { isSameTehranDay } from "@/lib/format";
+import { isSameTehranDay, formatSafeDateTime } from "@/lib/format";
+import { resolveBookmakerAliases } from "@/core/bookmakers/market-aliases";
 import type { AppStatePayload, AppSignal } from "@/lib/api-types";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import { cn } from "@/lib/utils";
@@ -283,6 +284,9 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
   const setView = useAppStore((s) => s.setView);
   const setSportFilter = useAppStore((s) => s.setSportFilter);
   const [range, setRange] = useState<RangeKey>("30");
+  // v2.7 — interactive settlement rows: clicking a match reveals the full
+  // audit drawer (bookmaker paths, odds, stake, FT, net P/L, SHA-256).
+  const [expandedSettlements, setExpandedSettlements] = useState<Set<string>>(new Set());
 
   const fb = statOf(m.sportStats, "football");
   const tn = statOf(m.sportStats, "tennis");
@@ -720,39 +724,105 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
           <div className="space-y-2">
             {recent.map((s) => {
               const amt = s.netProfit ?? 0;
+              const expanded = expandedSettlements.has(s.id);
+              const alias = resolveBookmakerAliases(s.marketKey, s.selection);
               return (
                 <div
                   key={s.id}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-800/70 bg-secondary/40 px-3 py-2 transition-colors hover:border-cyan-500/30"
+                  className={cn(
+                    "rounded-xl border bg-secondary/40 transition-colors",
+                    expanded ? "border-cyan-500/40" : "border-slate-800/70 hover:border-cyan-500/30",
+                  )}
                 >
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-medium" dir="auto">
-                      {s.matchInfo}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedSettlements((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(s.id)) next.delete(s.id);
+                        else next.add(s.id);
+                        return next;
+                      })
+                    }
+                    aria-expanded={expanded}
+                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium" dir="auto">
+                        {s.matchInfo}
+                      </div>
+                      <div className="truncate text-right text-[10px] text-muted-foreground" dir="ltr">
+                        {officialBetLine(s.marketKey, s.selection, s.marketLabel)}
+                      </div>
                     </div>
-                    <div className="truncate text-right text-[10px] text-muted-foreground" dir="ltr">
-                      {officialBetLine(s.marketKey, s.selection, s.marketLabel)}
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="hidden rounded-md bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground sm:inline">
+                        {lineLabel(s.line)}
+                      </span>
+                      <span className="num hidden text-[9px] text-slate-500 md:inline">{fmtDateTimeFa(s.settledAt, false)}</span>
+                      <span className={cn("num text-[11px] font-bold", statusColor(s.status))}>
+                        {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded-md px-1.5 py-0.5 text-[10px] font-bold",
+                          s.status === "WON" && "border border-neon-emerald bg-emerald-500/15 text-emerald-300",
+                          s.status === "LOST" && "border border-red-500/40 bg-red-500/15 text-red-300",
+                          s.status === "VOID" && "border border-slate-600/60 bg-slate-500/15 text-slate-300",
+                          s.status !== "WON" && s.status !== "LOST" && s.status !== "VOID" && "border border-amber-400/40 bg-amber-400/15 text-amber-300",
+                        )}
+                      >
+                        {s.status === "WON" ? "برد" : s.status === "LOST" ? "باخت" : s.status === "VOID" ? "ابطال" : "باز"}
+                      </span>
                     </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className="hidden rounded-md bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground sm:inline">
-                      {lineLabel(s.line)}
-                    </span>
-                    <span className="num hidden text-[9px] text-slate-500 md:inline">{fmtDateTimeFa(s.settledAt, false)}</span>
-                    <span className={cn("num text-[11px] font-bold", statusColor(s.status))}>
-                      {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-md px-1.5 py-0.5 text-[10px] font-bold",
-                        s.status === "WON" && "border border-neon-emerald bg-emerald-500/15 text-emerald-300",
-                        s.status === "LOST" && "border border-red-500/40 bg-red-500/15 text-red-300",
-                        s.status === "VOID" && "border border-slate-600/60 bg-slate-500/15 text-slate-300",
-                        s.status !== "WON" && s.status !== "LOST" && s.status !== "VOID" && "border border-amber-400/40 bg-amber-400/15 text-amber-300",
-                      )}
-                    >
-                      {s.status === "WON" ? "برد" : s.status === "LOST" ? "باخت" : s.status === "VOID" ? "ابطال" : "باز"}
-                    </span>
-                  </div>
+                  </button>
+                  {expanded && (
+                    <div className="border-t border-slate-800/70 px-3 py-2.5">
+                      <div className="grid grid-cols-1 gap-1.5 text-[11px] sm:grid-cols-2">
+                        <div className="flex items-center justify-between gap-2" dir="ltr">
+                          <span className="text-slate-500">1xBet</span>
+                          <span className="num text-cyan-300">{alias.onexbetPath}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2" dir="ltr">
+                          <span className="text-slate-500">BetForward</span>
+                          <span className="num text-cyan-300">{alias.betforwardPath}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">ضریب ثبت‌شده</span>
+                          <span className="num font-bold text-foreground">{s.price.toFixed(2)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">استیک Quarter-Kelly</span>
+                          <span className="num font-bold text-foreground">{fmtUnits(s.stake)}u · {s.stakeMode}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">CLV</span>
+                          <span className="num text-slate-400">— (ثبت نشده)</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">نتیجه FT</span>
+                          <span className="num font-bold text-foreground" dir="ltr">
+                            {s.homeScore != null && s.awayScore != null ? `${s.homeScore}-${s.awayScore}` : (s.surface ? "set-based" : "—")}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">سود / زیان خالص</span>
+                          <span className={cn("num font-bold", s.netProfit != null && s.netProfit >= 0 ? "text-emerald-300" : "text-red-300")}>
+                            {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">قفل ← تسویه</span>
+                          <span className="num text-[10px] text-slate-400" dir="ltr">
+                            {formatSafeDateTime(s.lockedAt)} ← {formatSafeDateTime(s.settledAt)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-2 border-t border-slate-800/50 pt-1.5">
+                        <HashChip hash={s.shaHash} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
