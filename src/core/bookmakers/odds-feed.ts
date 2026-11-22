@@ -35,22 +35,17 @@ export const LEAGUE_NAMES: Record<string, string> = {
 
 const dayKey = (d: Date) => d.toISOString().slice(0, 10).replaceAll("-", "");
 
-async function fetchJson(url: string, timeoutMs = 7000): Promise<unknown> {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: ctl.signal, cache: "no-store",
-      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(t);
-  }
+async function fetchJson(url: string, timeoutMs = 5000): Promise<unknown> {
+  // v2.7.2 hotfix — hard 5s ceiling (AbortSignal.timeout) on every ESPN call.
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs), cache: "no-store",
+    headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.json();
 }
 
-async function fetchJsonRetry(url: string, retries = 2, timeoutMs = 7000): Promise<unknown | null> {
+async function fetchJsonRetry(url: string, retries = 2, timeoutMs = 5000): Promise<unknown | null> {
   for (let i = 0; i <= retries; i++) {
     try {
       return await fetchJson(url, timeoutMs);
@@ -329,6 +324,7 @@ export async function fetchEspnPublicEventOdds(
   const url = `${ESPN_CORE_V2}/${sport}/leagues/${leagueSlug}/events/${eventId}/competitions/${eventId}/odds`;
   try {
     const res = await fetch(url, {
+      signal: AbortSignal.timeout(5000), // v2.7.2 hotfix — was unbounded
       headers: { "User-Agent": "NeoBetQuantPro/2.7" },
       next: { revalidate: 1800 }, // 30-min cache
     });
@@ -523,6 +519,7 @@ export async function fetchActiveOddsApiSportKeys(apiKey: string): Promise<{
   if (!apiKey) return { soccerKeys: [], tennisKeys: [] };
   // Free endpoint per The Odds API docs — costs 0 credits.
   const res = await fetch(`${ODDS_API_BASE}/sports/?apiKey=${encodeURIComponent(apiKey)}`, {
+    signal: AbortSignal.timeout(5000), // v2.7.2 hotfix — was unbounded
     cache: "no-store",
   });
   if (!res.ok) {
@@ -575,10 +572,9 @@ export async function fetchBookmakerLiveOddsCached(
     `${ODDS_API_BASE}/sports/${sportKey}/odds/?apiKey=${encodeURIComponent(apiKey)}` +
     `&regions=eu&markets=h2h,totals&bookmakers=onexbet,pinnacle&oddsFormat=decimal`;
 
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 9000);
   try {
-    const res = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+    // v2.7.2 hotfix — hard 5s ceiling (AbortSignal.timeout, was 9s manual controller).
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000), cache: "no-store" });
     const remainingCredits = res.headers.get("x-requests-remaining");
     if (remainingCredits) feedStats.remainingCredits = remainingCredits;
     feedStats.lastFetchAt = now;
@@ -596,8 +592,6 @@ export async function fetchBookmakerLiveOddsCached(
   } catch (e) {
     feedStats.lastError = `${sportKey} ${(e as Error).message}`;
     return { events: [], remainingCredits: cached?.remainingCredits ?? null };
-  } finally {
-    clearTimeout(t);
   }
 }
 

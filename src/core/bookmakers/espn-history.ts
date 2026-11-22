@@ -17,20 +17,18 @@ export interface HistoryPack {
   notes: string[];
 }
 
-async function fetchJson(url: string, timeoutMs = 8000): Promise<unknown | null> {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
+async function fetchJson(url: string, timeoutMs = 5000): Promise<unknown | null> {
+  // v2.7.2 hotfix — hard 5s ceiling (AbortSignal.timeout) so a hung ESPN
+  // response can never stall the cold-start backfill / bootstrap pipeline.
   try {
     const res = await fetch(url, {
-      signal: ctl.signal, cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs), cache: "no-store",
       headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch {
     return null;
-  } finally {
-    clearTimeout(t);
   }
 }
 

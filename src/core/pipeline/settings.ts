@@ -47,12 +47,13 @@ export async function getOddsApiKey(): Promise<string | null> {
 /**
  * OddsPapi v4 (oddsapi.io) key resolution order — the Layer-2 backup feed:
  * 1. DB setting (oddsApiIoKey)
- * 2. `.env.local` ODDSPAPI_API_KEY (server-only secret, git-ignored)
+ * 2. `.env.local` ODDS_API_IO_KEY (canonical name, server-only, git-ignored)
+ * 3. legacy `.env.local` ODDSPAPI_API_KEY (kept for backwards compatibility)
  */
 export async function getOddsPapiApiKey(): Promise<string | null> {
   const fromDb = await getSetting(SETTING_KEYS.oddsApiIoKey);
   if (fromDb && fromDb.trim()) return fromDb.trim();
-  const fromEnv = process.env.ODDSPAPI_API_KEY;
+  const fromEnv = process.env.ODDS_API_IO_KEY ?? process.env.ODDSPAPI_API_KEY;
   return fromEnv && fromEnv.trim() ? fromEnv.trim() : null;
 }
 

@@ -532,8 +532,21 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
   const ranAt = new Date().toISOString();
   const flag = await getSetting(TENNIS_SEEDED_KEY);
   const tennisSettled = await db.signal.count({ where: { sport: "tennis", status: { not: "OPEN" } } });
-  if (flag && tennisSettled > 0) {
-    return { skipped: true, reason: "30d tennis history already seeded", fixtures: 0, seeded: 0, won: 0, lost: 0, void: 0, ranAt };
+  // v2.7.2 hotfix — the completion flag ALONE guards the re-run. The old
+  // `flag && tennisSettled > 0` condition re-fetched 30 days of ESPN and
+  // re-ran hundreds of upserts on EVERY request whenever the hard +EV gate
+  // legitimately produced 0 surviving rows — the root cause of the ~12s
+  // /api/bootstrap loop that pinned the dashboard on Skeleton Loading.
+  // A re-run is requested EXPLICITLY by deleting the flag (the EV migration
+  // path does exactly that); a completed seed is never silently re-run.
+  if (flag) {
+    return {
+      skipped: true,
+      reason: tennisSettled > 0
+        ? "30d tennis history already seeded"
+        : "already seeded — 0 rows passed the hard +EV gate",
+      fixtures: 0, seeded: 0, won: 0, lost: 0, void: 0, ranAt,
+    };
   }
 
   const pack = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
@@ -615,4 +628,35 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
 
   await setSetting(TENNIS_SEEDED_KEY, ranAt);
   return { skipped: false, reason: tennisSettled === 0 ? "empty tennis tab backfilled (30d)" : "refreshed", fixtures: finished.length, seeded, won, lost, void: void_, ranAt };
+}
+
+/**
+ * v2.7.2 hotfix — single-flight, NON-BLOCKING runner for the 30-day tennis
+ * backfill. `ensureBootstrapState` and the EV migration both fire this as a
+ * background task (never awaited on the request path): concurrent requests
+ * share ONE in-flight run instead of stacking duplicate ESPN fetches, and a
+ * failure is logged without ever rejecting into the bootstrap pipeline.
+ */
+let tennisSeedInFlight: Promise<TennisSeedSummary> | null = null;
+
+export function runTennisSeedBackground(): Promise<TennisSeedSummary> {
+  if (!tennisSeedInFlight) {
+    tennisSeedInFlight = seedTennisHistory()
+      .then((summary) => {
+        if (!summary.skipped) {
+          console.log(`[tennis-backfill] ${summary.reason}: ${summary.seeded} seeded (W${summary.won}/L${summary.lost}/V${summary.void}) from ${summary.fixtures} fixtures`);
+        }
+        return summary;
+      })
+      .catch((err) => {
+        console.error("tennis 30d backfill failed (background, non-fatal)", err);
+        return {
+          skipped: false, reason: `background run failed: ${(err as Error).message}`,
+          fixtures: 0, seeded: 0, won: 0, lost: 0, void: 0,
+          ranAt: new Date().toISOString(),
+        } satisfies TennisSeedSummary;
+      })
+      .finally(() => { tennisSeedInFlight = null; });
+  }
+  return tennisSeedInFlight;
 }

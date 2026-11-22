@@ -10,10 +10,10 @@ import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
 import {
-  seedRealHistory, seedTennisHistory, TENNIS_SEEDED_KEY, type HistorySeedSummary,
+  seedRealHistory, runTennisSeedBackground, TENNIS_SEEDED_KEY, type HistorySeedSummary,
 } from "./real-history-backfill";
 import { backfillShadowVetoes } from "./rca-veto";
-import { getSettings, getSetting, setSetting, maskSettings, SETTING_KEYS } from "./settings";
+import { getSettings, getSetting, setSetting, maskSettings, SETTING_KEYS, getOddsPapiApiKey } from "./settings";
 import { getOddsFeedStats } from "@/core/bookmakers/odds-feed";
 import { shinDevig } from "@/core/math/devig";
 
@@ -235,6 +235,10 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   // v2.5 — The Odds API v4 credit-shield telemetry for the Settings card.
   const oddsStats = getOddsFeedStats();
   const oddsKeyFromEnv = !settings[SETTING_KEYS.oddsApiKey] && !!process.env.THE_ODDS_API_KEY;
+  // v2.7.2 hotfix — the odds-api.io health flag must honour the full resolver
+  // chain (DB → env), not the raw DB row: an env-only key used to report
+  // `oddsApiIo: false` while the Layer-2 feed was in fact fully active.
+  const oddsIoKey = await getOddsPapiApiKey();
 
   return {
     metrics,
@@ -254,7 +258,7 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     health: {
       espn: matches.length > 0,
       oddsApi: !!(settings[SETTING_KEYS.oddsApiKey] || process.env.THE_ODDS_API_KEY),
-      oddsApiIo: !!settings[SETTING_KEYS.oddsApiIoKey],
+      oddsApiIo: !!oddsIoKey,
       lastIngest: ingest?.lastRun.toISOString() ?? null,
       degraded,
       mode: degraded ? "OFFLINE" : "LIVE",
@@ -304,13 +308,13 @@ export async function ensureBootstrapState(): Promise<AppState> {
   } catch (err) {
     console.error("tennis EV migration failed", err);
   }
-  // v2.7.1 hotfix §2.5 — 30-day tennis backfill for existing installs whose
-  // tennis tab is still empty (one-time flag; never wipes the football ledger).
-  try {
-    await seedTennisHistory();
-  } catch (err) {
-    console.error("tennis history seed failed", err);
-  }
+  // v2.7.2 hotfix — 30-day tennis backfill runs NON-BLOCKING (background,
+  // single-flight): the ESPN range fetch + hundreds of upserts used to run
+  // synchronously here and held every /api/bootstrap response for ~12s,
+  // which pinned the dashboard on Skeleton Loading forever. Fire-and-forget:
+  // the first paint assembles from the ledger immediately; the tennis tab
+  // repopulates on the next poll once the background seed finishes.
+  void runTennisSeedBackground();
   // v2.7.1 hotfix §2.2 — Shadow Ledger hygiene: purge incomplete veto rows and
   // rebuild the 14-row tracker before the state snapshot is assembled.
   try {
@@ -364,27 +368,47 @@ export async function runTennisEvMigration(opts?: { force?: boolean }): Promise<
   if (done && !opts?.force) {
     return { skipped: true, deleted: 0, reseeded: 0, won: 0, lost: 0, void: 0, ranAt };
   }
-  const dead = await db.signal.deleteMany({
-    where: {
-      sport: "tennis",
-      OR: [
-        { evPct: { lt: 4 } }, // §1 — ev < +4.0% (includes ev <= 0 / forced stakes)
-        { marketKey: "tot_sets_o2.5" }, // §2 — estimate-only market, fully disabled
-      ],
-    },
-  });
+  // v2.7.2 hotfix — column names verified 1:1 against prisma/schema.prisma:
+  //   Signal.sport (String, line 66) / Signal.evPct (Float, line 74) /
+  //   Signal.marketKey (String, line 68) / Setting.key (@id, line 93).
+  // The purge is wrapped in try/catch so it can NEVER crash the bootstrap
+  // API (a failed cleanup must degrade to "keep the rows", not a 500).
+  let deleted = 0;
+  try {
+    const dead = await db.signal.deleteMany({
+      where: {
+        sport: "tennis",
+        OR: [
+          { evPct: { lt: 4 } }, // §1 — ev < +4.0% (includes ev <= 0 / forced stakes)
+          { marketKey: "tot_sets_o2.5" }, // §2 — estimate-only market, fully disabled
+        ],
+      },
+    });
+    deleted = dead.count;
+  } catch (err) {
+    console.error("tennis -EV purge failed (rows kept, bootstrap continues)", err);
+  }
   // Re-run the tennis backfill under the new hard rules (clear the old
-  // one-time tennis seed flag so seedTennisHistory executes again).
-  await db.setting.deleteMany({ where: { key: TENNIS_SEEDED_KEY } });
-  const seed = await seedTennisHistory();
+  // one-time tennis seed flag so seedTennisHistory executes again) — also
+  // crash-proofed, and executed in the BACKGROUND so the response never
+  // waits on ESPN.
+  try {
+    await db.setting.deleteMany({ where: { key: TENNIS_SEEDED_KEY } });
+  } catch (err) {
+    console.error("tennis seed-flag reset failed", err);
+  }
+  void runTennisSeedBackground();
+  // The one-time migration flag is stamped IMMEDIATELY after the purge:
+  // a slow/failed background re-seed must never cause the destructive purge
+  // to re-run on the next request (the v2.7.2 repeated-purge loop bug).
   await setSetting(TENNIS_EV_MIGRATION_KEY, ranAt);
   return {
     skipped: false,
-    deleted: dead.count,
-    reseeded: seed.seeded,
-    won: seed.won,
-    lost: seed.lost,
-    void: seed.void,
+    deleted,
+    reseeded: 0, // re-seed is non-blocking; counts surface via the background runner log
+    won: 0,
+    lost: 0,
+    void: 0,
     ranAt,
   };
 }

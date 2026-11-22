@@ -26,11 +26,10 @@ const FEEDS: FeedDef[] = [
 ];
 
 async function fetchFeed(feed: FeedDef): Promise<NewsItem[]> {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 8000);
+  // v2.7.2 hotfix — hard 5s ceiling (AbortSignal.timeout, was 8s manual controller).
   try {
     const res = await fetch(feed.url, {
-      signal: ctl.signal, cache: "no-store",
+      signal: AbortSignal.timeout(5000), cache: "no-store",
       headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" },
     });
     if (!res.ok) return [];
@@ -52,8 +51,6 @@ async function fetchFeed(feed: FeedDef): Promise<NewsItem[]> {
     }).filter((n) => n.headline.length > 0);
   } catch {
     return [];
-  } finally {
-    clearTimeout(t);
   }
 }
 
