@@ -57,7 +57,10 @@ async function fetchFeed(feed: FeedDef): Promise<NewsItem[]> {
   }
 }
 
-/** GET /api/news — live ESPN football + tennis news (real wire only). */
+/** GET /api/news — live ESPN football + tennis news, bilingual EN + FA (v2.7).
+ * The top 8 items are translated to Persian via the backend LLM (cached), so
+ * the radar renders each card in two honest blocks: EN original + FA translation.
+ * When the translator is unreachable the FA fields stay null — EN only, no fakes. */
 export async function GET() {
   const results = await Promise.all(FEEDS.map(fetchFeed));
   const all = results.flat();
@@ -72,5 +75,21 @@ export async function GET() {
       return true;
     })
     .slice(0, 24);
-  return NextResponse.json({ ok: true, items, fetchedAt: new Date().toISOString() });
+
+  // v2.7 bilingual layer — translate the top 8 (bounded latency, cached).
+  const { translateNewsPair } = await import("@/core/telegram/translate");
+  const TOP_FA = 8;
+  const faResults = await Promise.allSettled(
+    items.slice(0, TOP_FA).map((n) => translateNewsPair(n.headline, n.description)),
+  );
+  const withFa = items.map((n, i) => {
+    if (i >= TOP_FA) return { ...n, headlineFa: null, descriptionFa: null };
+    const r = faResults[i];
+    if (r.status === "fulfilled") {
+      return { ...n, headlineFa: r.value.headlineFa, descriptionFa: r.value.descriptionFa };
+    }
+    return { ...n, headlineFa: null, descriptionFa: null };
+  });
+
+  return NextResponse.json({ ok: true, items: withFa, fetchedAt: new Date().toISOString() });
 }

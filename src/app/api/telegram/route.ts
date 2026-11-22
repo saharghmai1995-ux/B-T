@@ -14,6 +14,7 @@ interface TelegramBody {
   spec?: Partial<PosterSpec>;
   send?: boolean; // actually sendPhoto when bot token configured
   channel?: BroadcastChannel; // "PUBLIC" | "VIP" | "DEFAULT" broadcast lane
+  caption?: string; // v2.7 — bilingual caption for the Telegram message
 }
 
 /** POST /api/telegram — render poster (SVG→PNG) + optional sendPhoto to a lane. */
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     } else if (body.send) {
       const chatId = await resolveBroadcastTarget(lane);
       if (chatId) {
-        const result = await sendPhotoTo(chatId, new Uint8Array(png));
+        const result = await sendPhotoTo(chatId, new Uint8Array(png), body.caption);
         sent = result.ok;
         transport = result.ok ? "sendPhoto" : "sendPhoto_failed";
         sendError = result.error;

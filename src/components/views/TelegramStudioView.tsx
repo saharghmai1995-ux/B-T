@@ -1223,6 +1223,45 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
     }
   }
 
+  /**
+   * v2.7 — bilingual news send: NEWS poster + EN/FA caption to the PUBLIC
+   * lane. News is transparency content, so the strict routing rule allows
+   * (and requires) the public channel here.
+   */
+  async function sendBilingualNews(n: NewsItem) {
+    setSending(true);
+    try {
+      const caption =
+        `📰 ${n.headline}\n${n.description?.slice(0, 240) ?? ""}\n\n` +
+        (n.headlineFa ? `🇮🇷 ${n.headlineFa}\n${n.descriptionFa?.slice(0, 240) ?? ""}\n\n` : "") +
+        (n.link ? `🔗 ${n.link}` : "");
+      const res = await fetch("/api/telegram", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "NEWS",
+          send: true,
+          channel: "PUBLIC",
+          caption,
+          spec: {
+            kind: "NEWS",
+            headline: n.headline,
+            summary: n.description,
+            link: n.link,
+          },
+        }),
+      });
+      const j = (await res.json()) as TelegramResp;
+      if (!j.ok) throw new Error(j.error ?? "پاسخ ناموفق از سرور");
+      if (j.sent) toast.success("خبر دوزبانه به کانال عمومی ارسال شد");
+      else toast.error("ارسال خبر انجام نشد", { description: j.error ?? j.transport });
+    } catch (e) {
+      toast.error("خطای ارسال خبر", { description: (e as Error).message });
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function copyEn(topic: EduTopic) {
     try {
       await navigator.clipboard.writeText(topic.en);
@@ -1824,6 +1863,15 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                     <ExternalLink className="size-3.5" />
                   </a>
                 </div>
+                {/* v2.7 — FA translation block (RTL), shown when available */}
+                {n.headlineFa && (
+                  <div dir="rtl" className="mt-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/5 px-2 py-1.5">
+                    <div className="text-right text-xs font-bold leading-5 text-emerald-200">{n.headlineFa}</div>
+                    {n.descriptionFa && (
+                      <p className="mt-1 line-clamp-2 text-right text-[11px] leading-5 text-emerald-100/80">{n.descriptionFa}</p>
+                    )}
+                  </div>
+                )}
                 <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
                   <Badge
                     variant="outline"
@@ -1841,14 +1889,27 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                     {n.description}
                   </p>
                 )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => newsToPoster(n)}
-                  className="mt-2 h-7 gap-1 border-slate-700 px-2 text-[10px] text-slate-300 hover:bg-secondary"
-                >
-                  <Palette className="size-3" /> 🎨 تبدیل خبر به پوستر
-                </Button>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => newsToPoster(n)}
+                    className="h-7 gap-1 border-slate-700 px-2 text-[10px] text-slate-300 hover:bg-secondary"
+                  >
+                    <Palette className="size-3" /> 🎨 تبدیل خبر به پوستر
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void sendBilingualNews(n)}
+                    disabled={sending}
+                    className="h-7 gap-1 border-emerald-500/40 bg-emerald-500/5 px-2 text-[10px] text-emerald-300 hover:bg-emerald-500/10"
+                    title="ارسال کارت خبر با کپشن دوزبانه به کانال عمومی"
+                  >
+                    {sending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
+                    📢 ارسال دوزبانه به کانال عمومی
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

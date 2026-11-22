@@ -175,6 +175,9 @@ export interface NewsItem {
   link: string;
   image: string | null;
   source: string;
+  /** v2.7 bilingual layer — Persian translation (null when translator offline). */
+  headlineFa?: string | null;
+  descriptionFa?: string | null;
 }
 
 export interface ScheduleSlot {

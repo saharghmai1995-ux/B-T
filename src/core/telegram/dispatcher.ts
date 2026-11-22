@@ -172,10 +172,15 @@ async function buildNewsText(): Promise<string | null> {
     const a = j.articles?.[0];
     if (!a) return null;
     const link = (a.links as Record<string, Record<string, { href?: string }>> | undefined)?.web?.href ?? "";
+    const headline = String(a.headline ?? "").slice(0, 200);
+    const description = String(a.description ?? "").slice(0, 280);
+    // v2.7 — bilingual: translate the pair via the cached backend LLM.
+    const { translateNewsPair } = await import("@/core/telegram/translate");
+    const fa = await translateNewsPair(headline, description);
     return (
-      `📰 <b>SPORTS WIRE</b>\n\n` +
-      `${String(a.headline ?? "").slice(0, 200)}\n\n` +
-      `${String(a.description ?? "").slice(0, 280)}\n\n` +
+      `📰 <b>SPORTS WIRE — BILINGUAL</b>\n\n` +
+      `${headline}\n\n${description}\n\n` +
+      (fa.headlineFa ? `🇮🇷 <b>${fa.headlineFa}</b>\n${fa.descriptionFa ?? ""}\n\n` : "") +
       (link ? `🔗 ${link}` : "")
     );
   } catch {
