@@ -1423,7 +1423,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               variant="outline"
               onClick={() => void sendNow()}
               disabled={sending || !selectedSignal || variant.type !== "match"}
-              title={selectedSignal ? `ارسال پوستر به لاین ${sendLane}` : "ابتدا یک مسابقه انتخاب کنید"}
+              title={selectedSignal ? "ارسال پوستر مسابقه به کانال VIP" : "ابتدا یک مسابقه انتخاب کنید"}
               className="border-cyan-500/40 bg-cyan-500/5 text-xs text-cyan-300 hover:bg-cyan-500/10"
             >
               {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
