@@ -335,7 +335,8 @@ export async function fetchEspnPublicEventOdds(
 
     const dec = (ml: unknown): number | undefined => {
       const raw = ml as { moneyLine?: number } | undefined;
-      const am = typeof raw?.moneyLine === "number" ? raw.moneyLine : undefined;
+      const am = typeof raw?.moneyLine === "number" ? raw.moneyLine : null;
+      if (am == null || am === 0) return undefined; // 0/-0 → no quote (honest)
       return americanToDecimal(am);
     };
     const homeOdds = dec(item?.homeTeamOdds);

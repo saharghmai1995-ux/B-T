@@ -9,6 +9,7 @@
 import type { MasterMetrics, SettledRow } from "@/core/types";
 import { STARTING_BANK } from "@/core/math/kelly";
 import { round2 } from "@/core/math/devig";
+import { computeUnifiedBankrollMetrics } from "@/core/math/ledger-metrics";
 import { marketFamily } from "@/core/bookmakers/market-family";
 
 const WIN = "WON" as const;
@@ -115,10 +116,17 @@ export function computeMasterMetrics(
   }
 
   const openStake = round2(openRows.reduce((a, r) => a + r.stake, 0));
-  const bankroll = round2(STARTING_BANK + totalProfit);
-  const decided = wins + losses;
-  const roi = totalStake > 0 ? round2((totalProfit / totalStake) * 100) : 0;
-  const winRate = decided > 0 ? round2((wins / decided) * 100) : 0;
+
+  // v2.7 — headline numbers now come from the patch's unified arithmetic
+  // (single source of truth shared by Overview and Verified Ledger).
+  const unified = computeUnifiedBankrollMetrics(
+    [...settledRows.map((r) => ({ status: r.status, stakeUnits: r.stake, profitUnits: r.netProfit })),
+     ...openRows.map((r) => ({ status: "PENDING", stakeUnits: r.stake, profitUnits: 0 }))],
+    STARTING_BANK,
+  );
+  const bankroll = unified.currentBankroll;
+  const roi = unified.roiPercent;
+  const winRate = unified.winRatePercent;
 
   // Invariant: byLine + bySport maps both sum to totalProfit (same rows).
   const categoryProfits = { byLine, bySport, byLeague };
