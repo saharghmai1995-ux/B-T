@@ -211,43 +211,46 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      // End-to-end card pipeline test: render a real poster PNG and push it.
-      const spec: PosterSpec = {
-        kind: "SIGNAL",
-        matchInfo: "CONNECTION TEST CARD",
-        competition: "NeoBet Quant Pro — Broadcast Pipeline",
-        marketLabel: "Pipeline Diagnostics",
-        selection: `${lane} lane is live`,
-        price: 2.0,
-        evPct: 4.0,
-        prob: 52,
-        stake: 10,
-        kickoffIso: new Date().toISOString(),
-        venue: "Telegram Bot API",
-      };
-      const svg = renderPosterSvg(spec);
-      const png = await sharp(Buffer.from(svg)).png().toBuffer();
-      const photo = await sendPhotoTo(target, new Uint8Array(png));
-      if (photo.ok) {
+      // v2.7 STRICT ROUTING honored even in diagnostics: a rendered signal
+      // CARD may only land on the VIP lane; PUBLIC/DEFAULT get a text probe.
+      if (lane === "VIP") {
+        const spec: PosterSpec = {
+          kind: "SIGNAL",
+          matchInfo: "CONNECTION TEST CARD",
+          competition: "NeoBet Quant Pro — Broadcast Pipeline",
+          marketLabel: "Pipeline Diagnostics",
+          selection: `VIP lane is live`,
+          price: 2.0,
+          evPct: 4.0,
+          prob: 52,
+          stake: 10,
+          kickoffIso: new Date().toISOString(),
+          venue: "Telegram Bot API",
+        };
+        const svg = renderPosterSvg(spec);
+        const png = await sharp(Buffer.from(svg)).png().toBuffer();
+        const photo = await sendPhotoTo(target, new Uint8Array(png));
         await db.posterLog.create({
-          data: { kind: "SIGNAL", title: `Connection test — ${lane}`, sent: true, transport: "sendPhoto" },
+          data: { kind: "SIGNAL", title: "Connection test — VIP", sent: photo.ok, transport: photo.ok ? "sendPhoto" : `failed:${photo.error ?? "unknown"}` },
         });
-        return NextResponse.json({ ok: true, sent: true, transport: "sendPhoto", lane, target });
+        return NextResponse.json({
+          ok: true, sent: photo.ok, transport: photo.ok ? "sendPhoto" : "failed",
+          error: photo.ok ? undefined : photo.error, lane, target,
+        });
       }
-      // Photo failed — try a plain text fallback so the admin sees the true cause.
       const text = await sendMessageTo(
         target,
-        `NeoBet Quant Pro — connection test (${lane} lane).\nPhoto pipeline error: ${photo.error ?? "unknown"}`,
+        `NeoBet Quant Pro — connection test (${lane} lane).\nMatch signal cards are VIP-only per the v2.7 routing rule; this lane receives education, news and transparency posts.`,
       );
       await db.posterLog.create({
         data: {
-          kind: "SIGNAL", title: `Connection test — ${lane}`,
-          sent: text.ok, transport: text.ok ? "sendMessage" : `failed:${photo.error ?? "unknown"}`,
+          kind: "TEASER", title: `Connection test — ${lane}`,
+          sent: text.ok, transport: text.ok ? "sendMessage" : `failed:${text.error ?? "unknown"}`,
         },
       });
       return NextResponse.json({
         ok: true, sent: text.ok, transport: text.ok ? "sendMessage" : "failed",
-        error: text.ok ? undefined : (text.error ?? photo.error), lane, target,
+        error: text.ok ? undefined : text.error, lane, target,
       });
     }
 
