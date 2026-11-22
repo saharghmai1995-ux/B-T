@@ -24,12 +24,12 @@ import SignalsHubView from "@/components/views/SignalsHubView";
 import QuantLabView from "@/components/views/QuantLabView";
 import VerifiedLedgerView from "@/components/views/VerifiedLedgerView";
 import TelegramStudioView from "@/components/views/TelegramStudioView";
-import SystemVaultView from "@/components/views/SystemVaultView";
 import BetSlipDrawer from "@/components/layout/BetSlipDrawer";
 import {
-  LayoutDashboard, Crosshair, FlaskConical, ShieldCheck, Radio, Settings2,
+  LayoutDashboard, Crosshair, FlaskConical, ShieldCheck, Radio,
   ReceiptText, Search, RefreshCw, Menu, Clock,
 } from "lucide-react";
+import QuantumLogo from "@/components/layout/QuantumLogo";
 
 const NAV: Array<{ key: ViewKey; label: string; short: string; icon: React.ElementType }> = [
   { key: "overview", label: "داشبورد عملکرد", short: "داشبورد", icon: LayoutDashboard },
@@ -37,7 +37,8 @@ const NAV: Array<{ key: ViewKey; label: string; short: string; icon: React.Eleme
   { key: "ledger", label: "کارنامه رسمی", short: "کارنامه", icon: ShieldCheck },
   { key: "lab", label: "آزمایشگاه کوانت", short: "آزمایشگاه", icon: FlaskConical },
   { key: "telegram", label: "استودیو تلگرام", short: "استودیو", icon: Radio },
-  { key: "vault", label: "⚙️ تنظیمات سیستم و کلیدهای API", short: "تنظیمات", icon: Settings2 },
+  // v2.7 — the Settings & API-keys page is retired: keys live in the
+  // git-ignored .env.local and channel config lives in the Telegram studio.
 ];
 
 const SPORTS: Array<{ key: "all" | "football" | "tennis"; label: string }> = [
@@ -197,7 +198,7 @@ export default function AppShell() {
             </Sheet>
 
             <button onClick={() => setView("overview")} className="flex items-center gap-2" aria-label="خانه">
-              <span className="grid size-8 place-items-center rounded-xl bg-cyan-500/15 text-lg drop-shadow-[0_0_10px_rgba(0,229,255,0.5)]">⚡</span>
+              <QuantumLogo size={34} />
               <span className="hidden text-sm font-extrabold tracking-tight sm:block">
                 NeoBet <span className="neon-cyan">Quant Pro</span>
               </span>
@@ -303,7 +304,6 @@ export default function AppShell() {
                 {view === "lab" && <QuantLabView state={state} />}
                 {view === "ledger" && <VerifiedLedgerView state={state} />}
                 {view === "telegram" && <TelegramStudioView state={state} />}
-                {view === "vault" && <SystemVaultView state={state} />}
               </>
             ) : null}
 
@@ -311,7 +311,7 @@ export default function AppShell() {
             <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
                 <span className="flex items-center gap-2">
-                  NeoBet Quant Pro v2.6 · هسته مالی SHA-256 · ضرایب زنده 1xBet/Pinnacle · کلِی یک‌چهارم یکپارچه · پخش خودکار تلگرام (عمومی + VIP) · Zero-Mock
+                  NeoBet Quant Pro v2.7 · آبشار سه‌لایه ضرایب (Odds API / OddsPapi / ESPN Core) · کلِی یک‌چهارم · پخش خودکار دوزبانه تلگرام (عمومی + VIP) · Zero-Mock
                 </span>
                 <span className="flex items-center gap-3">
                   <LiveClock className="text-cyan-300" />
