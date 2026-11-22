@@ -122,6 +122,8 @@ export interface MasterMetrics {
   /** REAL shadow-ledger savings (signed: saved losses − missed wins). */
   savedCapital: number;
   savedCount: number;
+  /** v2.7 — count of MISSED_WIN vetoes for the Shadow Tracker summary. */
+  missedWinCount: number;
 }
 
 /** Feed payload produced by bookmakers/odds-feed (network boundary). */

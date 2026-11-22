@@ -124,14 +124,16 @@ model ShadowVeto {
   category   String
   sport      String? // "football" | "tennis"
   league     String?
+  repMatch   String? // v2.7: representative fixture display name "Home vs Away"
   marketLabel String? // official English market name at veto time
   selection  String?
   price      Float?
   modelProb  Float?
   ftScore    String? // REAL final score (e.g. "2-1") once the fixture finished
-  savedUnits Float? // positive => veto prevented a loss
+  savedUnits Float? // positive => veto prevented a loss; negative => missed win
   verdict    String? // "SAVED_LOSS" | "MISSED_WIN" | "PENDING" | "UNKNOWN"
   decidedAt  DateTime? // when the fixture finished and the verdict was computed
+  startTime  DateTime? // v2.7: REAL fixture kickoff for the tracker table
   createdAt  DateTime @default(now())
 
   @@index([createdAt])

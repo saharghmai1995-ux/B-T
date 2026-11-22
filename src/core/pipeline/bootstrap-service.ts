@@ -175,7 +175,8 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   // adds +100u, a missed win subtracts its honest opportunity cost).
   const savedCapital = vetoes.reduce((acc, v) => acc + (v.savedUnits ?? 0), 0);
   const savedCount = vetoes.filter((v) => v.verdict === "SAVED_LOSS").length;
-  const metrics = computeMasterMetrics(settledRows, openRows, { savedCapital, savedCount });
+  const missedWinCount = vetoes.filter((v) => v.verdict === "MISSED_WIN").length;
+  const metrics = computeMasterMetrics(settledRows, openRows, { savedCapital, savedCount, missedWinCount });
 
   const matches: AppMatch[] = matchRows.map((m) => ({
     id: m.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
@@ -215,10 +216,12 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     settledSignals,
     shadowVetoes: vetoes.map((v) => ({
       id: v.id, signalRef: v.signalRef, reason: v.reason, category: v.category,
-      sport: v.sport, league: v.league, marketLabel: v.marketLabel, selection: v.selection,
-      price: v.price, modelProb: v.modelProb, ftScore: v.ftScore,
+      sport: v.sport, league: v.league, repMatch: v.repMatch, marketLabel: v.marketLabel,
+      selection: v.selection, price: v.price, modelProb: v.modelProb, ftScore: v.ftScore,
       savedUnits: v.savedUnits, verdict: v.verdict,
-      decidedAt: v.decidedAt?.toISOString() ?? null, createdAt: v.createdAt.toISOString(),
+      decidedAt: v.decidedAt?.toISOString() ?? null,
+      startTime: v.startTime?.toISOString() ?? null,
+      createdAt: v.createdAt.toISOString(),
     })),
     settings: maskSettings(settings),
     health: {

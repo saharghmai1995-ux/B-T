@@ -27,7 +27,7 @@ export interface StatBucket { wins: number; losses: number; profit: number; winR
 export function computeMasterMetrics(
   settledRows: SettledRow[],
   openRows: Array<{ stake: number }> = [],
-  opts?: { savedCapital?: number; savedCount?: number },
+  opts?: { savedCapital?: number; savedCount?: number; missedWinCount?: number },
 ): MasterMetrics {
   const byLine: Record<string, number> = {};
   const bySport: Record<string, number> = {};
@@ -149,6 +149,7 @@ export function computeMasterMetrics(
     bankrollToday: bankroll,
     savedCapital: round2(opts?.savedCapital ?? 0),
     savedCount: opts?.savedCount ?? 0,
+    missedWinCount: opts?.missedWinCount ?? 0,
   };
 }
 

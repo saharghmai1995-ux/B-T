@@ -30,6 +30,8 @@ export interface MasterMetrics {
   bankrollToday: number;
   savedCapital: number;
   savedCount: number;
+  /** v2.7 — MISSED_WIN veto count for the Shadow Tracker summary cards. */
+  missedWinCount: number;
 }
 
 export interface AppSignal {
@@ -95,6 +97,7 @@ export interface AppVeto {
   category: string;
   sport: string | null;
   league: string | null;
+  repMatch: string | null; // v2.7 — representative fixture "Home vs Away"
   marketLabel: string | null;
   selection: string | null;
   price: number | null;
@@ -103,6 +106,7 @@ export interface AppVeto {
   savedUnits: number | null;
   verdict: string | null; // SAVED_LOSS | MISSED_WIN | PENDING | UNKNOWN
   decidedAt: string | null;
+  startTime: string | null; // v2.7 — REAL fixture kickoff
   createdAt: string;
 }
 

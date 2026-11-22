@@ -17,7 +17,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState, TeamAvatar, AnimatedNumber, HashChip } from "@/components/shared/primitives";
-import { lineLabel, statusColor, fmtPrice, fmtUnits } from "@/lib/api-types";
+import { lineLabel, statusColor, fmtPrice, fmtUnits, fmtDateTimeFa } from "@/lib/api-types";
 import { formatSafeDateTime } from "@/lib/format";
 import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
@@ -654,27 +654,31 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           </span>
         </div>
 
-        {/* KPI strip */}
+        {/* v2.7 summary cards — Saved Losses / Missed Wins / Net Impact */}
         <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
           <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
-            <div className="text-[10px] text-muted-foreground">مجموع سرمایه نجات‌یافته</div>
+            <div className="text-[10px] text-muted-foreground">تعداد Saved Losses (وتوی نجات‌دهنده)</div>
+            <AnimatedNumber
+              value={m.savedCount}
+              decimals={0}
+              className="mt-1 block text-xl font-extrabold neon-emerald"
+            />
+          </div>
+          <div className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-3">
+            <div className="text-[10px] text-muted-foreground">تعداد Missed Wins (فرصت ازدست‌رفته)</div>
+            <AnimatedNumber
+              value={m.missedWinCount}
+              decimals={0}
+              className="mt-1 block text-xl font-extrabold text-amber-300"
+            />
+          </div>
+          <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3">
+            <div className="text-[10px] text-muted-foreground">برآیند خالص وتو (Net Shadow Impact)</div>
             <AnimatedNumber
               value={m.savedCapital}
               decimals={1}
               suffix="u"
-              className={cn("mt-1 block text-xl font-extrabold", m.savedCapital >= 0 ? "neon-emerald" : "text-red-300")}
-            />
-          </div>
-          <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3">
-            <div className="text-[10px] text-muted-foreground">تعداد وتوی موفق</div>
-            <AnimatedNumber value={m.savedCount} decimals={0} className="mt-1 block text-xl font-extrabold neon-cyan" />
-          </div>
-          <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-3">
-            <div className="text-[10px] text-muted-foreground">کل کارت‌های وتوشده</div>
-            <AnimatedNumber
-              value={state.shadowVetoes.length}
-              decimals={0}
-              className="mt-1 block text-xl font-extrabold neon-violet"
+              className={cn("mt-1 block text-xl font-extrabold", m.savedCapital >= 0 ? "neon-cyan" : "text-red-300")}
             />
           </div>
         </div>
@@ -685,17 +689,15 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           </div>
         ) : (
           <div className="scroll-slim max-h-96 overflow-auto overscroll-contain rounded-xl border border-slate-800/80">
-            <table className="w-full min-w-[720px] border-collapse text-right text-[11px]">
+            <table className="w-full min-w-[860px] border-collapse text-right text-[11px]">
               <thead>
                 <tr>
                   {[
-                    "مسابقه",
-                    "ورزش",
-                    "لیگ",
-                    "مارکت وتوشده",
+                    "مسابقه و لیگ + تاریخ شروع",
+                    "انتخاب موتور پیش از وتو",
                     "دلیل وتو",
-                    "نتیجه واقعی FT",
-                    "وضعیت وتو",
+                    "نتیجه واقعی بازی",
+                    "برچسب نتیجه وتو",
                     "زمان تعیین تکلیف",
                   ].map((h) => (
                     <th
@@ -713,15 +715,23 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                   const betline = officialBetLine(v.marketLabel ?? "", v.selection ?? "", "");
                   return (
                     <tr key={v.id} className="transition-colors hover:bg-secondary/40">
-                      <td className="max-w-[180px] truncate px-3 py-2 font-bold text-slate-200" title={v.signalRef}>
-                        {v.signalRef}
+                      <td className="max-w-[220px] px-3 py-2">
+                        <div className="truncate font-bold text-slate-200" title={v.repMatch ?? v.signalRef}>
+                          {v.repMatch ?? v.signalRef}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] text-slate-400">
+                          <span className="truncate">{v.league ?? "—"}</span>
+                          <span className="num" dir="ltr">{sportGlyph(v.sport)} {fmtDateTimeFa(v.startTime, false)}</span>
+                        </div>
                       </td>
-                      <td className="px-2 py-2 text-center">{sportGlyph(v.sport)}</td>
-                      <td className="max-w-[130px] truncate px-2 py-2 text-slate-400" title={v.league ?? undefined}>
-                        {v.league ?? "—"}
-                      </td>
-                      <td className="max-w-[210px] truncate px-2 py-2 text-slate-300" dir="ltr" title={betline}>
-                        {betline}
+                      <td className="max-w-[230px] px-2 py-2">
+                        <div className="truncate text-slate-300" dir="ltr" title={betline}>
+                          {betline}
+                        </div>
+                        <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">
+                          @ {v.price != null ? v.price.toFixed(2) : "—"} · Ref Stake{" "}
+                          {v.savedUnits != null && v.savedUnits > 0 ? v.savedUnits.toFixed(0) : "—"}u
+                        </div>
                       </td>
                       <td className="max-w-[230px] truncate px-2 py-2 text-slate-300" title={v.reason}>
                         {v.reason}
