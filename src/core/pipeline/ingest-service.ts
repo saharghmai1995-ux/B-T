@@ -75,6 +75,7 @@ async function settleFinished(
     const fixture = {
       sport: ref.sport, homeScore: m.homeScore!, awayScore: m.awayScore!,
       retired: m.retired === true,
+      detail: m.detail ?? null, // v2.7.2 — set scores feed tot_games/gamehand settlement
     };
     for (const sig of open) {
       if (sig.line === "ACCA2") {
@@ -251,6 +252,8 @@ type FactoryQuotes = ReturnType<typeof buildFootballFactory>["quotes"];
 
 async function persistSingle(c: NonNullable<ReturnType<typeof buildFootballFactory>["single"]>, bank: number): Promise<number> {
   const { stake, stakeMode } = chooseStakeMode(c.modelProb, c.price, bank);
+  // v2.7.2 §1 — stake 0 means raw Kelly <= 0: the candidate is never issued.
+  if (stake <= 0) return 0;
   const hash = lockSignal({
     matchInfo: `${c.match.homeName} vs ${c.match.awayName}`,
     sport: c.match.sport, line: c.line, marketKey: c.marketKey, selection: c.selection,

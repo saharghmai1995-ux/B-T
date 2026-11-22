@@ -9,9 +9,11 @@ import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
-import { seedRealHistory, seedTennisHistory, type HistorySeedSummary } from "./real-history-backfill";
+import {
+  seedRealHistory, seedTennisHistory, TENNIS_SEEDED_KEY, type HistorySeedSummary,
+} from "./real-history-backfill";
 import { backfillShadowVetoes } from "./rca-veto";
-import { getSettings, maskSettings, SETTING_KEYS } from "./settings";
+import { getSettings, getSetting, setSetting, maskSettings, SETTING_KEYS } from "./settings";
 import { getOddsFeedStats } from "@/core/bookmakers/odds-feed";
 import { shinDevig } from "@/core/math/devig";
 
@@ -71,6 +73,9 @@ export interface AppSignal {
   surface: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  /** v2.7.2 §3 — REAL set scores (e.g. "6-4, 6-3") extracted from the ESPN
+   * linescores-derived detail — shown in the Verified Ledger FT column. */
+  setResult: string | null;
 }
 
 export interface AppVeto {
@@ -113,6 +118,24 @@ const espnUrlFor = (sport: string, leagueCode: string, espnEventId: string): str
     ? `https://www.espn.com/tennis/match/_/id/${espnEventId}`
     : `https://www.espn.com/soccer/match/_/gameId/${espnEventId}`;
 
+/**
+ * v2.7.2 §3 — extract the REAL set scores (e.g. "6-4, 6-3") from the tennis
+ * detail string. ESPN carries the per-set values in
+ * `competitions[0].competitors[].linescores`; both feed parsers bake them
+ * into the match detail ("Winner bt Loser 7-5 6-3" or "6-4 6-3"). Tiebreak
+ * internals ("(7-0)") are dropped; unfinished 0-0 sets are filtered; a
+ * retirement is flagged honestly with " ret".
+ */
+export function extractTennisSetResult(detail: string | null | undefined): string | null {
+  if (!detail || !/\d+-\d+/.test(detail)) return null;
+  const tokens = [...detail.matchAll(/(\d+-\d+)(\s*\(\d+-\d+\))?/g)]
+    .map((m) => m[1])
+    .filter((t) => t !== "0-0");
+  if (tokens.length === 0) return null;
+  const retired = /\b(ret\.?|retired|walkover)\b/i.test(detail) ? " ret" : "";
+  return `${tokens.join(", ")}${retired}`;
+}
+
 async function toAppSignals(rows: Awaited<ReturnType<typeof fetchSignals>>): Promise<AppSignal[]> {
   return rows.map((s) => ({
     id: s.id, matchId: s.matchId,
@@ -131,6 +154,7 @@ async function toAppSignals(rows: Awaited<ReturnType<typeof fetchSignals>>): Pro
     homeLogo: s.match.homeLogo, awayLogo: s.match.awayLogo,
     venue: s.match.venue, surface: s.match.surface,
     homeScore: s.match.homeScore, awayScore: s.match.awayScore,
+    setResult: s.sport === "tennis" ? extractTennisSetResult(s.match.detail) : null,
   }));
 }
 
@@ -141,7 +165,7 @@ function fetchSignals() {
         select: {
           homeName: true, awayName: true, league: true, leagueCode: true, startTime: true,
           espnEventId: true, homeLogo: true, awayLogo: true, venue: true, surface: true,
-          homeScore: true, awayScore: true,
+          homeScore: true, awayScore: true, detail: true,
         },
       },
     },
@@ -269,6 +293,17 @@ export async function ensureBootstrapState(): Promise<AppState> {
       };
     }
   }
+  // v2.7.2 tennis hotfix §3 — ONE-TIME purge of every buggy -EV tennis ledger
+  // row (ev < +4.0% / forced stakes / estimate Total Sets) + re-backfill with
+  // the new hard rules, BEFORE the state snapshot is assembled.
+  try {
+    const mig = await runTennisEvMigration();
+    if (!mig.skipped) {
+      console.log(`[v2.7.2] tennis EV migration: ${mig.deleted} buggy rows purged, ${mig.reseeded} clean rows reseeded`);
+    }
+  } catch (err) {
+    console.error("tennis EV migration failed", err);
+  }
   // v2.7.1 hotfix §2.5 — 30-day tennis backfill for existing installs whose
   // tennis tab is still empty (one-time flag; never wipes the football ledger).
   try {
@@ -295,6 +330,63 @@ export async function ensureBootstrapState(): Promise<AppState> {
 /** Reference-book helper for QuantLab: de-vig any 3-way book for display. */
 export function devigDisplay(prices: number[]): number[] {
   return shinDevig(prices).map((p) => Math.round(p * 1000) / 10);
+}
+
+export interface TennisEvMigrationSummary {
+  skipped: boolean;
+  deleted: number;
+  reseeded: number;
+  won: number;
+  lost: number;
+  void: number;
+  ranAt: string;
+}
+
+const TENNIS_EV_MIGRATION_KEY = "tennisEvMigration_v272";
+
+/**
+ * v2.7.2 §3 — ONE-TIME migration: purge every buggy tennis ledger row and
+ * re-run the tennis backfill under the new hard rules, so the official track
+ * record and the total bank (Overview + Verified Ledger) are clean of the
+ * audited -EV bets:
+ *  - every tennis signal with evPct < +4.0% (§1 hard lock — covers "ev <= 0"
+ *    AND every forced 10u-stake row without a genuine +EV edge), and
+ *  - every tennis `tot_sets_o2.5` row (§2 — the market is estimate-only by
+ *    construction: LIVE rows exist for the winner market exclusively, so all
+ *    Total Sets rows carry artificial margin prices that produced -52.8u).
+ * The tennis backfill then re-runs with the v2.7.2 hard +EV gate (EV >= 4%,
+ * Kelly > 0, winner = REAL prices only), guarded by the migration flag so it
+ * never runs twice.
+ */
+export async function runTennisEvMigration(opts?: { force?: boolean }): Promise<TennisEvMigrationSummary> {
+  const ranAt = new Date().toISOString();
+  const done = await getSetting(TENNIS_EV_MIGRATION_KEY);
+  if (done && !opts?.force) {
+    return { skipped: true, deleted: 0, reseeded: 0, won: 0, lost: 0, void: 0, ranAt };
+  }
+  const dead = await db.signal.deleteMany({
+    where: {
+      sport: "tennis",
+      OR: [
+        { evPct: { lt: 4 } }, // §1 — ev < +4.0% (includes ev <= 0 / forced stakes)
+        { marketKey: "tot_sets_o2.5" }, // §2 — estimate-only market, fully disabled
+      ],
+    },
+  });
+  // Re-run the tennis backfill under the new hard rules (clear the old
+  // one-time tennis seed flag so seedTennisHistory executes again).
+  await db.setting.deleteMany({ where: { key: TENNIS_SEEDED_KEY } });
+  const seed = await seedTennisHistory();
+  await setSetting(TENNIS_EV_MIGRATION_KEY, ranAt);
+  return {
+    skipped: false,
+    deleted: dead.count,
+    reseeded: seed.seeded,
+    won: seed.won,
+    lost: seed.lost,
+    void: seed.void,
+    ranAt,
+  };
 }
 
 export { tehranDayKey };

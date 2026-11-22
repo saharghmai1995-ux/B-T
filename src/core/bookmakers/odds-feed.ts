@@ -246,6 +246,12 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
           else if (lb[i] > la[i]) swB++;
         }
       }
+      // v2.7.2 §3 — keep the per-set linescore string ("6-4 6-3") in the
+      // detail so the Verified Ledger FT column always has the REAL set
+      // result even when ESPN publishes no notes line.
+      const scoreDetail = la.length && la.length === lb.length
+        ? la.map((v, i) => `${v}-${lb[i]}`).join(" ")
+        : null;
       const finished = winnerIdx >= 0;
       const notes = ((comp.notes as Array<{ text?: string }> | undefined) ?? []).map((n) => n.text ?? "").join(" ");
       const retired = /retired|walkover|ret\./i.test(notes) ? true : null;
@@ -257,7 +263,7 @@ function parseTennisEvent(e: Record<string, unknown>, tour: "atp" | "wta"): Feed
         startTime: new Date((comp.date as string) ?? (e.date as string)), status,
         homeScore: finished ? (swA + swB > 0 ? swA : winnerIdx === 0 ? 2 : 0) : null,
         awayScore: finished ? (swA + swB > 0 ? swB : winnerIdx === 1 ? 2 : 0) : null,
-        detail: notes || null, surface: guessSurface(eventName), round: (e.shortName as string) ?? null,
+        detail: notes || scoreDetail || null, surface: guessSurface(eventName), round: (e.shortName as string) ?? null,
         venue: ((comp.venue as Record<string, unknown>)?.fullName as string) ?? null,
         retired,
       });

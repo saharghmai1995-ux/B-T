@@ -21,7 +21,8 @@ import { fetchFootballStandings, FOOTBALL_LEAGUES } from "@/core/bookmakers/odds
 import { getMarket } from "@/core/bookmakers/market-whitelist";
 import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
 import { resolveSelection } from "@/core/ledger/settlement-engine";
-import { chooseStakeMode, accaPrice, STARTING_BANK, calculateSafeQuarterKellyStake, MIN_STAKE } from "@/core/math/kelly";
+import { chooseStakeMode, accaPrice, STARTING_BANK, calculateSafeQuarterKellyStake, MIN_STAKE, fullKelly } from "@/core/math/kelly";
+import { MIN_TENNIS_EV } from "@/engines/tennis/tennis-selector";
 import { round2 } from "@/core/math/devig";
 import { lockSignal } from "@/core/ledger/sha256-chain";
 import { tehranDayKey } from "./ingest-service";
@@ -36,7 +37,7 @@ const FOOTBALL_FILL_DAYS = [5, 6, 7]; // active-league fills up to the full 7-da
 // v2.7.1 hotfix §2.5 — 30 days of finished ATP/WTA (+ Davis Cup ties carried
 // by the tours' scoreboards) so the tennis tab of the ledger never stays zero.
 const TENNIS_RANGE = [30, 1]; // from 30 days ago to yesterday
-const TENNIS_SEEDED_KEY = "tennisHistorySeededAt"; // one-time 30d tennis backfill flag
+export const TENNIS_SEEDED_KEY = "tennisHistorySeededAt"; // one-time 30d tennis backfill flag
 const COVERAGE = 0.66; // share of finished fixtures the supervisor would have issued
 const ANCHOR_COVERAGE = 0.3; // occasional extra anchor pick (as in live acca anchors)
 const ACCA_EVERY = 6; // every N-th issued signal becomes a 2-leg acca instead
@@ -270,10 +271,21 @@ async function buildCandidates(
     // odds — the backfill keeps every edge the model saw, not just deep value)
     // → anchor fallback. Supervisor selectivity applies via the coverage roll.
     const soft = bestSoftPick(f.quotes);
-    const c = f.single ?? soft ?? f.anchors[0] ?? null;
+    // v2.7.2 tennis hotfix §1 — tennis ledger legs are HARD-locked to +EV:
+    // the EV>=0 soft paper pick and the widened veto pick are BOTH banned for
+    // tennis (they built the audited -77.3u tab). Only a factory candidate
+    // that already passed the hard gate (EV >= +4.0%, Kelly > 0, winner market
+    // = REAL prices only) may enter the ledger.
+    const c = m.sport === "tennis"
+      ? (f.single ?? f.anchors[0] ?? null)
+      : (f.single ?? soft ?? f.anchors[0] ?? null);
     const keep = roll <= COVERAGE || (roll <= COVERAGE + ANCHOR_COVERAGE && f.anchors[0]);
     if (!keep || !c) continue;
     const push = (cand: typeof c) => {
+      const evRaw = cand.modelProb * cand.price - 1;
+      // §1 hard gate — NO tennis record with ev < +4.0% (or Kelly <= 0) may
+      // reach the track record, no matter which ladder rung produced it.
+      if (m.sport === "tennis" && (evRaw < MIN_TENNIS_EV || fullKelly(cand.modelProb, cand.price) <= 0)) return;
       const evPct = "evPct" in cand && typeof cand.evPct === "number"
         ? cand.evPct
         : Math.round((cand.modelProb * cand.price - 1) * 1000) / 10;
@@ -348,7 +360,9 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
       const price = accaPrice(legs.map((l) => l.price));
       const prob = legs.reduce((acc, l) => acc * l.modelProb, 1);
       // v2.5 unified staking — ACCA legs stake with the SAME Quarter-Kelly rule.
+      // v2.7.2 §1 — stake 0 (raw Kelly <= 0) => the pair is never issued.
       const stake = chooseStakeMode(prob, price, bank).stake;
+      if (stake <= 0) { i++; continue; }
       const verdicts = legs.map((l) => resolveSelection(l.marketKey, l.selection, l.fixture));
       const lostLeg = verdicts.some((v) => v.status === "LOST");
       const eff = legs.reduce((acc, l, j) => acc * (verdicts[j].status === "WON" ? l.price : 1), 1);
@@ -386,6 +400,8 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
     }
 
     const { stake, stakeMode } = chooseStakeMode(leg.modelProb, leg.price, bank);
+    // v2.7.2 §1 — a 0 stake means raw Kelly <= 0: never create the row.
+    if (stake <= 0) continue;
     const v = resolveSelection(leg.marketKey, leg.selection, leg.fixture);
     const net = round2(
       v.status === "WON" ? stake * v.factor * (leg.price - 1)
@@ -540,22 +556,27 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
     const rng = mulberry32(hashSeed(m.espnEventId));
     const roll = rng();
     const f = buildTennisFactory(ctx);
-    // v2.7.1 §2.5 — history picks use the same widening ladder as the veto
-    // candidates (strict band EV≥0 → strongest in-band quote). No free
-    // historical tennis odds exist anywhere, so the settled rows carry the
-    // honest MODEL FAIR price (ESTIMATE provenance) — set scores, stakes and
-    // results stay 100% REAL.
-    const c = f.single ?? pickVetoCandidate(f.quotes) ?? f.anchors[0] ?? null;
+    // v2.7.2 §1 — HARD +EV tennis backfill: only factory candidates that
+    // passed the strict gate (EV >= +4.0%, Kelly > 0, winner = REAL prices,
+    // Total Sets = REAL prices) may enter the ledger. The old widening ladder
+    // (EV>=0 → strongest quote) manufactured the audited -77.3u tab and is
+    // banned here forever. No free historical tennis odds exist, so the
+    // surviving rows carry the honest MODEL FAIR price — set scores, stakes
+    // and results stay 100% REAL.
+    const c = f.single ?? f.anchors[0] ?? null;
     const keep = roll <= COVERAGE || (roll <= COVERAGE + ANCHOR_COVERAGE && f.anchors[0]);
     if (!keep || !c) continue;
+    const evRaw = c.modelProb * c.price - 1;
+    if (evRaw < MIN_TENNIS_EV || fullKelly(c.modelProb, c.price) <= 0) continue;
 
     const evPct = "evPct" in c && typeof c.evPct === "number"
       ? c.evPct
-      : Math.round((c.modelProb * c.price - 1) * 1000) / 10;
+      : Math.round(evRaw * 1000) / 10;
     const marketLabel = ("marketLabel" in c && c.marketLabel
       ? String(c.marketLabel)
       : getMarket(c.marketKey)?.label ?? c.marketKey);
     const { stake, stakeMode } = chooseStakeMode(c.modelProb, c.price, bank);
+    if (stake <= 0) continue; // §1 — forced 10u stakes on non-+EV picks are dead
     const fixture = {
       sport: "tennis", homeScore: m.homeScore!, awayScore: m.awayScore!,
       retired: m.retired === true,

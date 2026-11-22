@@ -44,7 +44,9 @@ export function buildTennisFactory(
   liveOdds?: Map<string, LiveOddsRow>,
 ): FactoryOutput {
   const { quotes, elo } = buildTennisQuotes(match, liveOdds);
-  const single = pickSingleEvTennis(match, quotes);
+  // v2.7.2 §1 — the hard W1/W2 gate needs the ENGINE Elo (protected floors +
+  // surface corrections) to reject unrated 1500-vs-1500 coin-flips.
+  const single = pickSingleEvTennis(match, quotes, elo);
   const anchors = pickAnchorsTennis(match, quotes);
   return {
     quotes: quotes.map((q: TennisQuote) => ({

@@ -170,6 +170,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
       id: s.id, match: s.matchInfo, league: s.league, sport: s.sport, line: s.line,
       market: s.marketLabel, selection: s.selection, price: s.price, evPct: s.evPct,
       stake: s.stake, stakeMode: s.stakeMode, status: s.status, netProfit: s.netProfit,
+      setResult: s.sport === "tennis" ? (s.setResult ?? "") : "",
       sha256: s.shaHash, lockedAt: s.lockedAt, settledAt: s.settledAt, espn: s.espnUrl,
     }));
     const blob = kind === "json"
@@ -177,13 +178,13 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
       : new Blob([
           [
             "id", "match", "league", "sport", "line", "market", "selection", "price", "ev%",
-            "stake", "stakeMode", "status", "netProfit", "sha256", "lockedAt", "settledAt", "espn",
+            "stake", "stakeMode", "status", "netProfit", "setResult", "sha256", "lockedAt", "settledAt", "espn",
           ].join(","),
           "\n",
           ...data.map((d) =>
             [
               d.id, `"${d.match}"`, `"${d.league}"`, d.sport, d.line, `"${d.market}"`, d.selection,
-              d.price, d.evPct, d.stake, d.stakeMode, d.status, d.netProfit, d.sha256, d.lockedAt,
+              d.price, d.evPct, d.stake, d.stakeMode, d.status, d.netProfit, `"${d.setResult}"`, d.sha256, d.lockedAt,
               d.settledAt, d.espn,
             ].join(","),
           ),
@@ -533,6 +534,17 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="truncate text-xs font-bold text-slate-100">{s.matchInfo}</span>
+                      {/* v2.7.2 §3 — FT column: REAL set scores from the ESPN
+                          linescores feed, shown on every tennis ledger row. */}
+                      {s.sport === "tennis" && s.setResult && (
+                        <span
+                          className="num rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
+                          dir="ltr"
+                          title="نتیجه واقعی ست‌ها از فید ESPN (linescores)"
+                        >
+                          FT {s.setResult}
+                        </span>
+                      )}
                       <span dir="ltr" className={cn("num text-[11px] font-bold", statusColor(s.status))}>
                         {s.status === "WON"
                           ? `+${fmtUnits(s.netProfit ?? 0)}`
@@ -599,6 +611,22 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                         {s.evPct >= 0 ? "+" : ""}{s.evPct.toFixed(1)}%
                       </span>
                     </div>
+                    {/* v2.7.2 §3 — tennis FT set result in the expanded panel */}
+                    {s.sport === "tennis" && (
+                      <div>
+                        <span className="text-muted-foreground">نتیجه ست‌ها (FT):</span>{" "}
+                        {s.setResult ? (
+                          <span
+                            className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
+                            dir="ltr"
+                          >
+                            {s.setResult}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-500">از فید ESPN در دسترس نیست</span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {s.legs && s.legs.length > 0 && (

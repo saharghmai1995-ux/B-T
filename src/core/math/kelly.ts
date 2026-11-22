@@ -79,9 +79,15 @@ export function chooseStakeMode(prob: number, price: number, bankroll: number): 
   stakeMode: "KELLY_025" | "FLAT_100";
 } {
   const s = calculateSafeQuarterKellyStake(prob, price, bankroll);
+  // v2.7.2 tennis hotfix §1 — HARD +EV staking rule: the 10u MIN_STAKE floor
+  // is applied ONLY when the raw Kelly fraction is positive (upstream EV
+  // gates guarantee ev >= +4.0% for every issued candidate). A <=0-EV input
+  // MUST stake 0 — callers treat stake 0 as "do not issue", so the audited
+  // forced-stake bug (10u on negative-EV tennis picks) can never return.
+  if (s.stakeUnits <= 0) return { stake: 0, stakeMode: "KELLY_025" };
   // EV-threshold gates guarantee kelly > 0 upstream; the 10u floor keeps the
   // stake meaningful even for timid edges (1% of bank on a 1,000u bank).
-  const stake = Math.max(MIN_STAKE, s.stakeUnits || MIN_STAKE);
+  const stake = Math.max(MIN_STAKE, s.stakeUnits);
   return { stake: Math.min(MAX_STAKE, stake), stakeMode: "KELLY_025" };
 }
 

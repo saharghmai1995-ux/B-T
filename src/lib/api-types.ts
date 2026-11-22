@@ -67,6 +67,8 @@ export interface AppSignal {
   surface: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  /** v2.7.2 §3 — REAL set scores ("6-4, 6-3") for tennis ledger rows (FT column). */
+  setResult: string | null;
 }
 
 export interface AppMatch {
