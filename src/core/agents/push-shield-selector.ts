@@ -146,6 +146,9 @@ export function buildFootballProtectedCandidates(
 export interface TennisShieldInputs {
   homePlayer: string;
   awayPlayer: string;
+  /** v3.2 §3 — REAL ATP/WTA rankings when available (Elo-1500 rejection). */
+  homeRank?: number | null;
+  awayRank?: number | null;
   /** Markov-Copula quote-board probabilities (key@selection vocabulary). */
   winnerHome: number;
   winnerAway: number;
@@ -169,6 +172,13 @@ export function buildTennisProtectedCandidates(
   params: TennisShieldInputs,
 ): ProtectedMarketCandidate[] {
   const { homePlayer, awayPlayer, winnerHome, winnerAway, setBet20Home, setBet20Away } = params;
+
+  // v3.2 §3 — HARD Elo-1500 rejection: any match where BOTH players carry the
+  // default 1500 rating with NO real ATP/WTA ranking is an unrated coin-flip
+  // and is rejected IMMEDIATELY (never a candidate, never a veto pick).
+  const bothUnrated = params.homeRank == null && params.awayRank == null;
+  const defaultEloCoinFlip = Math.abs(winnerHome - winnerAway) < 0.02;
+  if (bothUnrated && defaultEloCoinFlip) return [];
   const favIsHome = winnerHome >= winnerAway;
   const favTeam = favIsHome ? homePlayer : awayPlayer;
   const dogTeam = favIsHome ? awayPlayer : homePlayer;
@@ -251,9 +261,21 @@ export function buildTennisProtectedCandidates(
     }
   }
 
-  // Same hard quality bar as football: No-Loss >= 72% AND genuine win >= 52%.
-  return list
-    .filter((c) => c.noLossProb >= 0.72 && c.winProb >= 0.52)
+  // v3.2 §3 — REAL tennis market diversity ladder (no more ML-only board):
+  //   TENNIS_ML          → only for a clear favourite (win prob >= 68%)
+  //   TENNIS_SET_PLUS_15 → dog +1.5 side ONLY for close matches (fav 52–67%);
+  //                        favourite +1.5 keeps the >= 72% no-loss bar
+  //   TENNIS_GAME_HCP    → keeps the hard bar (No-Loss >= 72%, win >= 52%)
+  const kept = list.filter((c) => {
+    if (c.marketKey === "TENNIS_ML") return c.winProb >= 0.68;
+    if (c.marketKey === "TENNIS_SET_PLUS_15") {
+      const isDogSide = c.selection === (favIsHome ? "AWAY_+1.5" : "HOME_+1.5");
+      if (isDogSide) return favWin >= 0.52 && favWin <= 0.67 && c.noLossProb >= 0.72;
+      return c.noLossProb >= 0.72 && c.winProb >= 0.52;
+    }
+    return c.noLossProb >= 0.72 && c.winProb >= 0.52;
+  });
+  return kept
     .sort((a, b) => (b.noLossProb * 0.65 + b.winProb * 0.35) - (a.noLossProb * 0.65 + a.winProb * 0.35));
 }
 

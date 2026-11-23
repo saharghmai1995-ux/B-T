@@ -25,8 +25,6 @@ import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import {
-  fmtPrice,
-  fmtUnits,
   fmtDateTimeFa,
   fmtClock,
   statusColor,
@@ -93,15 +91,10 @@ interface PosterSpec {
   marketEn: string;
   marketFa: string;
   marketKey: string;
-  line: string;
-  price: number;
-  evPct: number;
-  stake: number;
   kickoffIso: string;
   venue: string | null;
   hash: string;
   mode: PosterMode;
-  profit: number | null;
   scoreLine: string | null;
   sport: string;
   /* v3.1 — SuperAgent ensemble metadata for the shield metric row. */
@@ -122,10 +115,51 @@ const SHIELD_EN: Record<string, string> = {
   DIRECT_WIN: "DIRECT WIN",
 };
 const TIER_EN: Record<string, string> = {
-  TIER_S: "TIER S",
-  TIER_A: "TIER A",
-  TIER_B: "TIER B",
+  TIER_S: "S",
+  TIER_A: "A",
+  TIER_B: "B",
 };
+
+/* v3.2 — the three pure hit-rate poster indices. The preview text above the
+   canvas AND the canvas metric row BOTH read through these helpers, so
+   preview == poster. There is NO @price / EDGE / STAKE fragment anywhere in
+   the studio anymore — only NO-LOSS PROB / SHIELD-TIER / AGENT CONSENSUS. */
+function noLossPctOf(noLossProb: number | null, modelProb: number): number {
+  return Math.round(Math.min(1, Math.max(0, noLossProb ?? modelProb)) * 100);
+}
+
+function consensusPctOf(
+  consensusPct: number | null,
+  noLossProb: number | null,
+  modelProb: number,
+): number {
+  return Math.round(consensusPct ?? Math.min(1, Math.max(0, noLossProb ?? modelProb)) * 100);
+}
+
+function shieldHumanOf(shieldType: string | null, marketKey: string): string {
+  return shieldType == null
+    ? "SHIELD"
+    : marketKey.toUpperCase().startsWith("DNB") && shieldType === "FULL_PUSH_SHIELD"
+      ? "DNB PUSH"
+      : (SHIELD_EN[shieldType] ?? "SHIELD");
+}
+
+function tierShortOf(tier: string | null): string {
+  if (!tier) return "";
+  return TIER_EN[tier] ?? tier.replace(/^TIER_/, "");
+}
+
+/** Persian shield naming for the FA caption mirror of the same three indices. */
+const SHIELD_FA: Record<string, string> = {
+  FULL_PUSH_SHIELD: "سپر کامل برگشت",
+  HALF_PUSH_SHIELD: "سپر نیمه‌برگشت",
+  DOUBLE_OUTCOME_SHIELD: "سپر دو نتیجه",
+  DIRECT_WIN: "برد مستقیم",
+};
+
+function shieldFaOf(shieldType: string | null): string {
+  return shieldType == null ? "سپر" : (SHIELD_FA[shieldType] ?? "سپر");
+}
 
 interface EduTopic {
   id: string;
@@ -757,87 +791,49 @@ function drawPoster(
   const boxW = Math.floor((w - 144 - 40) / 3);
   const boxY = 665;
   const boxH = 190;
-  // v3.1 — SHIELD-line signals (or any signal carrying noLossProb) get the
-  // three-card metric row instead of ODDS/EDGE/STAKE: the shield poster
-  // carries NO odds and NO stake numbers anywhere. 100% English, centered,
-  // evenly spaced in the middle band of the poster.
-  const isShieldMetric = spec.line === "SHIELD" || spec.noLossProb != null;
-  const shieldTierValue = (() => {
-    const base =
-      spec.shieldType == null
-        ? "SHIELD"
-        : spec.marketKey.toUpperCase().startsWith("DNB") && spec.shieldType === "FULL_PUSH_SHIELD"
-          ? "DNB PUSH"
-          : (SHIELD_EN[spec.shieldType] ?? "SHIELD");
-    const tier = spec.tier ? (TIER_EN[spec.tier] ?? "") : "";
-    return tier ? `${base} - ${tier}` : base;
-  })();
-  const profit = spec.profit ?? 0;
-  if (isShieldMetric) {
-    const noLossRaw = Math.min(1, Math.max(0, spec.noLossProb ?? spec.modelProb));
-    const metricCards: Array<{ label: string; value: string; color: string }> = [
-      { label: "NO-LOSS PROB", value: `${(noLossRaw * 100).toFixed(1)}%`, color: EMERALD },
-      { label: "SHIELD / TIER", value: shieldTierValue, color: GOLD },
-      {
-        label: "AGENT CONSENSUS",
-        value: `${Math.round(spec.consensusPct ?? spec.modelProb * 100)}% MATCH`,
-        color: VIOLET,
-      },
-    ];
-    // one uniform value size across the three cards (fitFont per string, min wins)
-    let mSize = 54;
-    for (const c of metricCards) {
-      mSize = Math.min(mSize, fitFont(ctx, c.value, boxW - 24, 54, 16));
-    }
-    metricCards.forEach((b, i) => {
-      const x = 72 + i * (boxW + 20);
-      rr(ctx, x, boxY, boxW, boxH, 18);
-      ctx.fillStyle = hexToRgba(b.color, 0.08);
-      ctx.fill();
-      ctx.strokeStyle = hexToRgba(b.color, 0.45);
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.font = "bold 20px Arial";
-      ctx.textAlign = "center";
-      ctx.direction = "ltr";
-      ctx.fillStyle = "#7C8BA1";
-      ctx.fillText(b.label, x + boxW / 2, boxY + 46);
-      ctx.font = `bold ${mSize}px Arial`;
-      ctx.fillStyle = b.color;
-      ctx.fillText(b.value, x + boxW / 2, boxY + 140);
-    });
-    ctx.direction = "ltr";
-  } else {
-    const statBoxes: Array<{ label: string; value: string; color: string }> = [
-      { label: "ODDS (DECIMAL)", value: fmtPrice(spec.price), color: "#FFFFFF" },
-      {
-        label: spec.mode === "SIGNAL" ? "MODEL EDGE" : "NET PROFIT",
-        value:
-          spec.mode === "SIGNAL"
-            ? `${spec.evPct >= 0 ? "+" : ""}${spec.evPct.toFixed(1)}%`
-            : `${profit >= 0 ? "+" : ""}${fmtUnits(profit, 2)}u`,
-        color: accent,
-      },
-      { label: "STAKE (UNITS)", value: `${fmtUnits(spec.stake, 2)}u`, color: "#FFFFFF" },
-    ];
-    statBoxes.forEach((b, i) => {
-      const x = 72 + i * (boxW + 20);
-      rr(ctx, x, boxY, boxW, boxH, 18);
-      ctx.fillStyle = "rgba(15,23,42,0.55)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(148,163,184,0.22)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.font = "bold 20px Arial";
-      ctx.textAlign = "center";
-      ctx.fillStyle = "#7C8BA1";
-      ctx.fillText(b.label, x + boxW / 2, boxY + 46);
-      const vSize = fitFont(ctx, b.value, boxW - 28, 84, 52);
-      ctx.font = `bold ${vSize}px Arial`;
-      ctx.fillStyle = b.color;
-      ctx.fillText(b.value, x + boxW / 2, boxY + 140);
-    });
+  // v3.2 — EVERY match poster carries the three pure hit-rate metric cards.
+  // NO odds / NO edge / NO stake number exists anywhere on the poster: the
+  // preview text above the canvas reads the exact same helper values, so the
+  // preview indices and the poster indices are always identical.
+  const shieldHuman = shieldHumanOf(spec.shieldType, spec.marketKey);
+  const tierShort = tierShortOf(spec.tier);
+  const shieldTierValue = tierShort ? `${shieldHuman} - TIER ${tierShort}` : shieldHuman;
+  const metricCards: Array<{ label: string; value: string; color: string }> = [
+    {
+      label: "NO-LOSS PROB",
+      value: `${noLossPctOf(spec.noLossProb, spec.modelProb)}%`,
+      color: EMERALD,
+    },
+    { label: "SHIELD / TIER", value: shieldTierValue, color: GOLD },
+    {
+      label: "AGENT CONSENSUS",
+      value: `${consensusPctOf(spec.consensusPct, spec.noLossProb, spec.modelProb)}%`,
+      color: VIOLET,
+    },
+  ];
+  // one uniform value size across the three cards (fitFont per string, min wins)
+  let metricSize = 54;
+  for (const c of metricCards) {
+    metricSize = Math.min(metricSize, fitFont(ctx, c.value, boxW - 24, 54, 16));
   }
+  metricCards.forEach((b, i) => {
+    const x = 72 + i * (boxW + 20);
+    rr(ctx, x, boxY, boxW, boxH, 18);
+    ctx.fillStyle = hexToRgba(b.color, 0.08);
+    ctx.fill();
+    ctx.strokeStyle = hexToRgba(b.color, 0.45);
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.font = "bold 20px Arial";
+    ctx.textAlign = "center";
+    ctx.direction = "ltr";
+    ctx.fillStyle = "#7C8BA1";
+    ctx.fillText(b.label, x + boxW / 2, boxY + 46);
+    ctx.font = `bold ${metricSize}px Arial`;
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.value, x + boxW / 2, boxY + 140);
+  });
+  ctx.direction = "ltr";
 
   // 6) info bar (y ~900-1000)
   const d = new Date(spec.kickoffIso);
@@ -1093,15 +1089,10 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
       marketEn: "Official market line unlocks with the next signal",
       marketFa: "در انتظار نخستین سیگنال زندهٔ موتور کوانت",
       marketKey: "",
-      line: "NONE",
-      price: 0,
-      evPct: 0,
-      stake: 0,
       kickoffIso: new Date().toISOString(),
       venue: null,
       hash: "0000000000000000",
       mode,
-      profit: null,
       scoreLine: null,
       sport: "football",
       status: "OPEN",
@@ -1122,15 +1113,10 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
     marketEn: officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName),
     marketFa: marketFa(s.marketKey),
     marketKey: s.marketKey,
-    line: s.line,
-    price: s.price,
-    evPct: s.evPct,
-    stake: s.stake,
     kickoffIso: s.startTime,
     venue: s.venue,
     hash: s.shaHash || "0000000000000000",
     mode,
-    profit: s.netProfit,
     scoreLine:
       mode !== "SIGNAL" && s.homeScore != null && s.awayScore != null
         ? `${s.homeScore} - ${s.awayScore}`
@@ -1148,6 +1134,49 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
 function timeToMin(t: string): number {
   const m = /^(\d{1,2}):(\d{2})$/.exec((t ?? "").trim());
   return m ? Number(m[1]) * 60 + Number(m[2]) : 1500;
+}
+
+/**
+ * v3.2 — Tehran wall-clock for schedule slots (root-cause fix).
+ *
+ * The old board rendered `slot.time` RAW, so any legacy/manual row in the
+ * BroadcastSchedule table that carried a raw format token (e.g. "P -> HH:mm"
+ * from a former date-fns `format("P -> HH:mm")` seeding) printed literally.
+ * There is no date-fns usage left in this view (verified), so the display
+ * layer now normalizes EVERY payload into a real HH:mm:
+ *   - ISO/full-date timestamp → Intl.DateTimeFormat in Asia/Tehran (en-GB, 24h)
+ *   - bare "H:mm"/"HH:mm" (also embedded in junk like "P -> 19:30") → re-padded
+ *   - anything else (e.g. a literal "P -> HH:mm" token) → "—" (never leaks)
+ */
+const TEHRAN_HHMM_FMT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Tehran",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatSlotTime(raw: string | null | undefined): string {
+  const t = (raw ?? "").trim();
+  if (!t) return "—";
+  // 1) ISO/full-date timestamp → convert to the real Tehran wall clock.
+  if (/(?:\d{4}-\d{2}-\d{2}|Z$|[+-]\d{2}:?\d{2}$)/.test(t)) {
+    const d = new Date(t);
+    if (Number.isFinite(d.getTime())) {
+      try {
+        return TEHRAN_HHMM_FMT.format(d);
+      } catch {
+        /* invalid tz data — fall through to the wall-clock recovery */
+      }
+    }
+  }
+  // 2) wall-clock fragment (bare "HH:mm" or embedded in a legacy junk token)
+  const hm = /(\d{1,2}):(\d{2})/.exec(t);
+  if (hm) {
+    const h = Math.min(23, Math.max(0, Number(hm[1])));
+    const m = Math.min(59, Math.max(0, Number(hm[2])));
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+  return "—";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1449,7 +1478,10 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   }
 
   const sortedSlots = useMemo(
-    () => [...slots].sort((a, b) => timeToMin(a.time) - timeToMin(b.time)),
+    () =>
+      [...slots].sort(
+        (a, b) => timeToMin(formatSlotTime(a.time)) - timeToMin(formatSlotTime(b.time)),
+      ),
     [slots],
   );
 
@@ -1491,6 +1523,22 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       : variant.type === "edu"
         ? "پوستر آموزشی"
         : "پوستر خبری";
+
+  // v3.2 — poster-consistent preview indices (the SAME helper values the
+  // canvas metric row paints). NO @price / EDGE / STAKE / Kelly fragment —
+  // the preview text and the Persian caption mirror only the three pure
+  // hit-rate indices: NO-LOSS PROB · SHIELD/TIER · AGENT CONSENSUS.
+  const selNoLoss = selectedSignal
+    ? noLossPctOf(selectedSignal.noLossProb, selectedSignal.modelProb)
+    : 0;
+  const selCons = selectedSignal
+    ? consensusPctOf(selectedSignal.consensusPct, selectedSignal.noLossProb, selectedSignal.modelProb)
+    : 0;
+  const selShield = selectedSignal
+    ? shieldHumanOf(selectedSignal.shieldType, selectedSignal.marketKey)
+    : "";
+  const selTier = selectedSignal ? tierShortOf(selectedSignal.tier) : "";
+  const selShieldFa = selectedSignal ? shieldFaOf(selectedSignal.shieldType) : "";
 
   /* ---------------- render ---------------- */
 
@@ -1595,19 +1643,21 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
           </div>
 
           {selectedSignal && (
-            <div
-              dir="ltr"
-              className="mb-3 min-w-0 break-words rounded-lg border border-slate-800/70 bg-secondary/40 px-2.5 py-1.5 text-left text-[10px] text-slate-300"
-            >
-              {officialBetLine(
-                selectedSignal.marketKey,
-                selectedSignal.selection,
-                selectedSignal.marketLabel,
-                selectedSignal.homeName,
-                selectedSignal.awayName,
-              )}{" "}
-              @ {fmtPrice(selectedSignal.price)} · EDGE {selectedSignal.evPct.toFixed(1)}% · STAKE{" "}
-              {fmtUnits(selectedSignal.stake)}u
+            <div className="mb-3 space-y-1.5" data-testid="poster-preview-indices">
+              {/* v3.2 — EN indices: identical values to the poster canvas */}
+              <div
+                dir="ltr"
+                className="min-w-0 break-words rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-1.5 text-left text-[10px] text-emerald-200"
+              >
+                {`NO-LOSS PROB ${selNoLoss}% · SHIELD ${selShield}${selTier ? ` / TIER ${selTier}` : ""} · AGENT CONSENSUS ${selCons}%`}
+              </div>
+              {/* v3.2 — the Persian caption mirrors the SAME three indices */}
+              <div
+                dir="rtl"
+                className="min-w-0 break-words rounded-lg border border-slate-800/70 bg-secondary/40 px-2.5 py-1.5 text-right text-[10px] leading-5 text-slate-200"
+              >
+                {`احتمال بدون‌باخت ${selNoLoss}٪ · سپر و تیر: ${selShieldFa}${selTier ? ` / تیر ${selTier}` : ""} · اجماع سوپرایجنت ${selCons}٪`}
+              </div>
             </div>
           )}
 
@@ -1796,11 +1846,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       {/* ============ Column 2 — Schedule + News ============ */}
       <div className="min-w-0 space-y-4 xl:col-span-1">
         {/* MODULE الف — Broadcast schedule */}
-        <Card className="glass p-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <CalendarClock className="size-4 text-amber-300" />
-              <h2 className="text-sm font-bold">📅 جدول زمان‌بندی ارسال پیام‌ها</h2>
+        <Card className="glass min-w-0 overflow-hidden p-4">
+          <div className="mb-2 flex flex-nowrap items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <CalendarClock className="size-4 shrink-0 text-amber-300" />
+              <h2 className="min-w-0 truncate text-sm font-bold">📅 جدول زمان‌بندی ارسال پیام‌ها</h2>
             </div>
             <Button
               size="icon"
@@ -1829,8 +1879,8 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
             </Badge>
           </div>
 
-          <div className="rounded-lg border border-slate-800/70">
-            <div className="grid grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] gap-1 border-b border-slate-800/70 bg-secondary/50 px-2 py-1.5 text-[10px] font-bold text-slate-400">
+          <div className="min-w-0 overflow-hidden rounded-lg border border-slate-800/70">
+            <div className="grid min-w-0 flex-nowrap grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] gap-1 border-b border-slate-800/70 bg-secondary/50 px-2 py-1.5 text-[10px] font-bold text-slate-400">
               <span>ساعت</span>
               <span>عنوان</span>
               <span>کانال</span>
@@ -1847,10 +1897,10 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               {sortedSlots.map((s) => (
                 <div
                   key={s.id}
-                  className="grid grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] items-center gap-1 border-b border-slate-800/50 px-2 py-1.5 text-[11px] last:border-0"
+                  className="grid min-w-0 flex-nowrap grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] items-center gap-1 overflow-hidden border-b border-slate-800/50 px-2 py-1.5 text-[11px] last:border-0"
                 >
-                  <span className="num text-slate-200" dir="ltr">
-                    {s.time}
+                  <span className="num shrink-0 text-slate-200" dir="ltr">
+                    {formatSlotTime(s.time)}
                   </span>
                   <span className="min-w-0 truncate" title={s.slotTitle}>
                     {s.slotTitle}
@@ -1875,7 +1925,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                   >
                     {s.sentAt ? "ارسال‌شده ✅" : "در صف انتظار ⏳"}
                   </span>
-                  <span className="flex justify-end gap-1">
+                  <span className="flex min-w-0 flex-nowrap justify-end gap-1">
                     {!s.sentAt && (
                       <button
                         disabled={bBusy}
@@ -1930,7 +1980,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
           </div>
 
           {/* add form */}
-          <div className="mt-3 rounded-lg border border-slate-800/70 bg-secondary/30 p-2.5">
+          <div className="mt-3 min-w-0 overflow-hidden rounded-lg border border-slate-800/70 bg-secondary/30 p-2.5">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[11px] font-bold text-slate-300">افزودن اسلات جدید</span>
               <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -1939,7 +1989,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               </label>
             </div>
             {showAddForm && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_72px_100px_auto]">
+              <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_72px_100px_auto]">
                 <Input
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}

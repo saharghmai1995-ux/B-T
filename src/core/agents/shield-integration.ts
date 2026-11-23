@@ -115,6 +115,9 @@ export async function generateShieldForFixture(params: {
         : buildTennisProtectedCandidates({
             homePlayer: ctx.homeName,
             awayPlayer: ctx.awayName,
+            // v3.2 §3 — REAL rankings feed the hard Elo-1500 rejection.
+            homeRank: ctx.homeRank ?? null,
+            awayRank: ctx.awayRank ?? null,
             winnerHome: quotes.find((q) => q.marketKey === "winner" && q.selection === "HOME")?.modelProb ?? 0,
             winnerAway: quotes.find((q) => q.marketKey === "winner" && q.selection === "AWAY")?.modelProb ?? 0,
             setBet20Home: quotes.find((q) => q.marketKey === "setbet_2_0" && q.selection === "HOME")?.modelProb ?? 0,

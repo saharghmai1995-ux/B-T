@@ -1,25 +1,27 @@
 "use client";
 
 /**
- * View 4 — VerifiedLedgerView (v3.1): SHA-256 verified settlement ledger.
+ * View 4 — VerifiedLedgerView (v3.2 Pure Hit-Rate): SHA-256 verified settlement
+ * ledger.
  *
- * v2.0 base: 3 analytical charts (equity curve / winrate & profit by sport /
- * profit by market family), advanced filters bar (search, status, sport,
- * league, time-range, CSV/JSON audit export), expandable verified rows with
- * REAL pre-match lock + settlement timestamps, and the Shadow Ledger Tracker.
- *
- * v3.1 layer (SuperAgent Push-Shield Hit-Rate Engine):
- *  - Cumulative Win-Rate (pure) + No-Loss Rate dual-line trend chart
- *  - Per-tier performance breakdown (TIER_S / TIER_A / TIER_B)
- *  - Per-shield-type breakdown (FULL_PUSH / HALF_PUSH / DOUBLE_OUTCOME / DIRECT_WIN)
- *  - Shadow Ledger Tracker upgrade: Shadow Win-Rate Lift headline, signed units,
- *    SHARP DIVERGENCE cyan tags, v3.1 SHIELD_ENGINE badges
- *  - Tier/Shield badges on settled rows + full FT/sets detail in the expansion
+ * v3.2 Zero-Bankroll Purge — this view is 100% bankroll-free:
+ *  - Header «کارنامه تأییدشده — Pure Hit-Rate» with 4 stat tiles:
+ *    Pure Win-Rate % / No-Loss Rate % / WON·PUSH·LOST counters / Brier+ECE.
+ *  - The KELLY/FLAT policy toggle, the stake replay engine, the equity curve,
+ *    ROI/bank/units headline chips and every unit-priced column are REMOVED.
+ *  - Three bankroll-free analytic charts: cumulative Win-Rate & No-Loss-Rate
+ *    trend, per-shield-type bar chart (+ per-market hit-rate list), and the
+ *    Tier S/A/B accuracy comparison — all fed by lab stats with a direct
+ *    settledSignals fallback.
+ *  - Ledger rows are static rich rows (no expansion that references money):
+ *    مسابقه | ورزش و لیگ | بازار محافظت‌شده | Tier | احتمال کالیبره % |
+ *    نتیجه (WON/PUSH/LOST) | FT | تاریخ تسویه.
+ *  - Shadow Tracker is count-based (no units anywhere).
  */
 
 import { useMemo, useState } from "react";
 import {
-  AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,15 +30,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  EmptyState, TeamAvatar, AnimatedNumber, HashChip, TierBadge, ShieldBadge, NoLossChip,
+  EmptyState, TeamAvatar, AnimatedNumber, HashChip, TierBadge, ShieldBadge,
 } from "@/components/shared/primitives";
-import { lineLabel, statusColor, fmtPrice, fmtUnits, fmtDateTimeFa } from "@/lib/api-types";
+import { fmtDateTimeFa } from "@/lib/api-types";
 import { formatSafeDateTime } from "@/lib/format";
-import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
 import { officialBetLine } from "@/lib/markets";
 import { formatStoredMarketLabel } from "@/core/bookmakers/market-aliases";
-import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert, TrendingUp, Layers } from "lucide-react";
+import { Search, Download, ShieldCheck, ExternalLink, ShieldAlert, TrendingUp, Layers } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -46,7 +47,7 @@ const sportGlyph = (sport: string | null): string =>
   sport === "tennis" ? "🎾" : sport === "football" ? "⚽" : "—";
 
 /**
- * v3.1 — normalize a 0–1 fraction rate to percent (defensive: values already
+ * Normalize a 0–1 fraction rate to percent (defensive: values already
  * stored on a 0–100 scale pass through untouched).
  */
 const pct0 = (v: number): number => {
@@ -74,30 +75,69 @@ function verdictTag(v: AppVeto): { text: string; cls: string } {
   }
 }
 
-/** v3.1 — signed units for the Shadow Tracker: saved capital is positive, missed opportunity is negative. */
-function signedUnits(v: AppVeto): { text: string; cls: string; title: string } {
-  const u = Math.abs(v.savedUnits ?? 0);
-  if (v.verdict === "SAVED_LOSS") {
-    return { text: `+${fmtUnits(u, 1)}u`, cls: "text-emerald-300", title: "سرمایه نجات‌یافته از باخت" };
-  }
-  if (v.verdict === "MISSED_WIN") {
-    return { text: `-${fmtUnits(u, 1)}u`, cls: "text-amber-300", title: "سود ازدست‌رفته (هزینه فرصت)" };
-  }
-  return { text: "—", cls: "text-slate-500", title: "" };
-}
-
 /** v3.1 — confidence tier display order. */
 const TIER_ORDER = ["TIER_S", "TIER_A", "TIER_B"] as const;
 
-/** v3.1 — shield-type display order + Persian labels + equivalent market-family buckets. */
-const SHIELD_ORDER: Array<{ key: string; label: string; buckets: string }> = [
-  { key: "FULL_PUSH_SHIELD", label: "سپر کامل", buckets: "Draw No Bet · Asian Total Over 2.0" },
-  { key: "HALF_PUSH_SHIELD", label: "نیمه‌برگشت", buckets: "Asian Handicap +0.25 · Asian Total Under 3.0" },
-  { key: "DOUBLE_OUTCOME_SHIELD", label: "دو نتیجه", buckets: "Double Chance" },
-  { key: "DIRECT_WIN", label: "برد مستقیم", buckets: "Match Winner · Set +1.5" },
-];
+/** v3.2 — shield-type display order + Persian humanization (chart + tables). */
+const SHIELD_KEYS = ["DIRECT_WIN", "FULL_PUSH_SHIELD", "HALF_PUSH_SHIELD", "DOUBLE_OUTCOME_SHIELD"] as const;
 
-/** Compact rate bar used by the tier cards and shield table. */
+const SHIELD_FA: Record<string, string> = {
+  DIRECT_WIN: "برد مستقیم",
+  FULL_PUSH_SHIELD: "سپر کامل پوش",
+  HALF_PUSH_SHIELD: "نیم‌پوش",
+  DOUBLE_OUTCOME_SHIELD: "سپر دو نتیجه",
+};
+const shieldFa = (k: string): string => SHIELD_FA[k] ?? k;
+
+const SHIELD_BUCKETS: Record<string, string> = {
+  DIRECT_WIN: "Match Winner · Set +1.5",
+  FULL_PUSH_SHIELD: "Draw No Bet · Asian Total Over 2.0",
+  HALF_PUSH_SHIELD: "Asian Handicap +0.25 · Asian Total Under 3.0",
+  DOUBLE_OUTCOME_SHIELD: "Double Chance",
+};
+
+const TIER_FA: Record<string, string> = {
+  TIER_S: "تایر S",
+  TIER_A: "تایر A",
+  TIER_B: "تایر B",
+};
+const tierFa = (k: string): string => TIER_FA[k] ?? k;
+
+/** Hit-rate bucket (bankroll-free): wins/losses/voids + pure rates. */
+interface HitBucket {
+  wins: number;
+  losses: number;
+  voids: number;
+  winRate: number;
+  noLossRate: number;
+  settled: number;
+}
+
+/** v3.2 fallback — group settled signals into hit-rate buckets (no lab needed). */
+function groupHitStats(
+  signals: AppSignal[],
+  keyOf: (s: AppSignal) => string | null,
+): Record<string, HitBucket> {
+  const out: Record<string, HitBucket> = {};
+  for (const s of signals) {
+    if (s.status === "OPEN") continue;
+    const k = keyOf(s);
+    if (!k) continue;
+    const b = (out[k] ??= { wins: 0, losses: 0, voids: 0, winRate: 0, noLossRate: 0, settled: 0 });
+    b.settled++;
+    if (s.status === "WON") b.wins++;
+    else if (s.status === "LOST") b.losses++;
+    else b.voids++;
+  }
+  for (const b of Object.values(out)) {
+    const decided = b.wins + b.losses;
+    b.winRate = decided > 0 ? b.wins / decided : 0;
+    b.noLossRate = b.settled > 0 ? (b.wins + b.voids) / b.settled : 0;
+  }
+  return out;
+}
+
+/** Compact rate bar used by the tier cards. */
 function RateBar({ label, value, tone }: { label: string; value: number; tone: "emerald" | "cyan" }) {
   const pct = Math.min(100, Math.max(0, pct0(value)));
   return (
@@ -142,7 +182,12 @@ const RANGES = [
   ["30", "۳۰ روز"],
 ] as const;
 
-type TierBucket = { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number };
+/** Settlement result badge — v3.2: WON / PUSH / LOST (no money). */
+function resultBadge(status: string): { text: string; cls: string } {
+  if (status === "WON") return { text: "WON", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" };
+  if (status === "LOST") return { text: "LOST", cls: "border-red-500/40 bg-red-500/10 text-red-300" };
+  return { text: "PUSH", cls: "border-slate-600/70 bg-slate-500/10 text-slate-300" };
+}
 
 export default function VerifiedLedgerView({ state }: { state: AppStatePayload }) {
   const m = state.metrics;
@@ -152,14 +197,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
   const [sport, setSport] = useState<"all" | "football" | "tennis">("all");
   const [league, setLeague] = useState("all");
   const [range, setRange] = useState<"all" | "7" | "30">("all");
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [verify, setVerify] = useState<AppSignal | null>(null);
-  /* v2.5 — stake-policy comparison switch: view the WHOLE settled history
-   * replayed under Quarter-Kelly (1%–3.5% of running bank, recommended) or
-   * under a uniform Flat 20u (= 2% of the 1,000u bank). */
-  const [stakeView, setStakeView] = useState<"KELLY" | "FLAT20">("KELLY");
-
-  const toggle = (id: string) => setExpanded((cur) => (cur === id ? null : id));
 
   /* Unique leagues from settled signals → league dropdown */
   const leagues = useMemo(
@@ -195,46 +233,16 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
     return r;
   }, [state.settledSignals, sport, status, league, range, q]);
 
-  /* v2.5 — chronological replay of the settled history under the selected
-   * staking policy. Honest math: each bet stakes the policy amount of the
-   * RUNNING bank before that bet; WON/LOST/VOID verdicts never change. */
-  const policyView = useMemo(() => {
-    const ordered = [...state.settledSignals]
-      .filter((s) => s.status !== "OPEN")
-      .sort(
-        (a, b) =>
-          new Date(a.settledAt ?? a.lockedAt).getTime() -
-          new Date(b.settledAt ?? b.lockedAt).getTime(),
-      );
-    let bank = 1000;
-    const rowsMap = new Map<string, { stake: number; netProfit: number }>();
-    const curve: Array<{ date: string; bankroll: number }> = [];
-    for (const s of ordered) {
-      const stake = stakeView === "KELLY"
-        ? (calculateSafeQuarterKellyStake(s.modelProb, s.price, bank).stakeUnits || 10)
-        : 20; // Flat 20u = 2% of the starting bank
-      const net = s.status === "WON"
-        ? Math.round(stake * (s.price - 1) * 100) / 100
-        : s.status === "LOST"
-          ? -stake
-          : 0;
-      bank = Math.round((bank + net) * 100) / 100;
-      rowsMap.set(s.id, { stake, netProfit: net });
-      curve.push({ date: (s.settledAt ?? s.lockedAt).slice(0, 10), bankroll: bank });
-    }
-    const pnl = Math.round((bank - 1000) * 100) / 100;
-    const stakedTotal = ordered.reduce((acc, s) => acc + (rowsMap.get(s.id)?.stake ?? 0), 0);
-    return {
-      rowsMap, curve, endBank: bank, pnl,
-      roi: stakedTotal > 0 ? Math.round((pnl / stakedTotal) * 1000) / 10 : 0,
-      count: ordered.length,
-    };
-  }, [state.settledSignals, stakeView]);
+  /* v3.2 header tiles — pure hit-rate numbers (lab preferred, metrics fallback) */
+  const pureWinRate = lab ? pct0(lab.pureWinRate) : pct0(m.winRate);
+  const noLossDenom = m.wins + m.losses + m.voids;
+  const noLossRate = lab ? pct0(lab.noLossRate) : noLossDenom > 0 ? ((m.wins + m.voids) / noLossDenom) * 100 : 0;
 
-  /* v3.1 — cumulative Win-Rate + No-Loss Rate trend over the settled history,
-   * one point per settlement (settledAt ascending):
-   *   pureWinRate = WON / decided(WON+LOST) so far
-   *   noLossRate  = (WON + VOID) / settled so far — the shield metric. */
+  /* v3.1/v3.2 — cumulative Win-Rate + No-Loss Rate trend over the settled
+   * history, one point per settlement (settledAt ascending) — the SAME
+   * arithmetic as the Overview tab:
+   *   winRate    = WON / decided(WON+LOST) so far
+   *   noLossRate = (WON + VOID) / settled so far — the shield metric. */
   const trend = useMemo(() => {
     const ordered = [...state.settledSignals]
       .filter((s) => s.status !== "OPEN")
@@ -263,44 +271,86 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
   }, [state.settledSignals]);
   const lastTrend = trend.pts.length > 0 ? trend.pts[trend.pts.length - 1] : null;
 
-  /* v3.1 — per-tier breakdown (TIER_S / TIER_A / TIER_B), "بدون داده" when absent. */
-  const tierStats = lab?.tierStats ?? {};
-  const tierRows = TIER_ORDER.map((key) => ({ key, st: tierStats[key] as TierBucket | undefined }));
-  const tierHasData = TIER_ORDER.some((k) => !!tierStats[k]);
+  /* Per-tier + per-shield aggregates — lab stats preferred, direct fallback. */
+  const tierAgg = useMemo<Record<string, HitBucket>>(
+    () =>
+      lab?.tierStats && Object.keys(lab.tierStats).length > 0
+        ? lab.tierStats
+        : groupHitStats(state.settledSignals, (s) => s.tier),
+    [lab, state.settledSignals],
+  );
+  const shieldAgg = useMemo<Record<string, HitBucket>>(
+    () =>
+      lab?.shieldStats && Object.keys(lab.shieldStats).length > 0
+        ? lab.shieldStats
+        : groupHitStats(state.settledSignals, (s) => s.shieldType),
+    [lab, state.settledSignals],
+  );
 
-  /* v3.1 — per-shield-type breakdown (known keys first, unknown extras appended). */
-  const shieldStats = lab?.shieldStats ?? {};
+  const tierRows = TIER_ORDER.map((key) => ({ key, st: tierAgg[key] as HitBucket | undefined }));
+  const tierHasData = TIER_ORDER.some((k) => !!tierAgg[k]);
+
+  /* Known shield keys first, unknown extras appended. */
   const shieldRows = useMemo(() => {
-    const known = SHIELD_ORDER.map((o) => ({ ...o, st: shieldStats[o.key] as TierBucket | undefined }));
-    const extras = Object.keys(shieldStats)
-      .filter((k) => !SHIELD_ORDER.some((o) => o.key === k))
-      .map((k) => ({ key: k, label: k, buckets: "", st: shieldStats[k] as TierBucket | undefined }));
+    const known = SHIELD_KEYS.filter((k) => !!shieldAgg[k]).map((k) => ({ key: k as string, st: shieldAgg[k] }));
+    const extras = Object.keys(shieldAgg)
+      .filter((k) => !(SHIELD_KEYS as readonly string[]).includes(k))
+      .map((k) => ({ key: k, st: shieldAgg[k] }));
     return [...known, ...extras];
-  }, [shieldStats]);
-  const shieldHasData = Object.keys(shieldStats).length > 0;
+  }, [shieldAgg]);
+  const shieldHasData = shieldRows.length > 0;
 
-  /* v3.1 — Shadow Ledger economics. Prefer the AgentLab audit; fall back to a
-   * direct scan of the veto cards when the lab block is absent. */
+  /* Chart b data — winRate*100 vs noLossRate*100 per shield type. */
+  const shieldChartData = useMemo(
+    () =>
+      shieldRows.map(({ key, st }) => ({
+        name: shieldFa(key),
+        winRate: pct0(st.winRate),
+        noLossRate: pct0(st.noLossRate),
+      })),
+    [shieldRows],
+  );
+
+  /* Chart c data — Tier S / A / B accuracy comparison. */
+  const tierChartData = useMemo(
+    () =>
+      TIER_ORDER.filter((k) => !!tierAgg[k]).map((k) => ({
+        name: tierFa(k),
+        winRate: pct0(tierAgg[k].winRate),
+        noLossRate: pct0(tierAgg[k].noLossRate),
+      })),
+    [tierAgg],
+  );
+
+  /* «عملکرد بازارها» — top-6 markets by settled count, grouped by marketLabel. */
+  const marketRows = useMemo(() => {
+    const g = groupHitStats(state.settledSignals, (s) => s.marketLabel || null);
+    return Object.entries(g)
+      .map(([label, st]) => ({ label, ...st }))
+      .sort((a, b) => b.settled - a.settled || b.wins - a.wins)
+      .slice(0, 6);
+  }, [state.settledSignals]);
+
+  /* Shadow Ledger counts (v3.2 — count-based, no units). Prefer the AgentLab
+   * audit; fall back to a direct scan of the veto cards. */
   const shadowFallback = useMemo(() => {
-    let savedLossCount = 0, savedLossUnits = 0, missedWinCount = 0, missedWinUnits = 0;
+    let savedLossCount = 0;
+    let missedWinCount = 0;
     for (const v of state.shadowVetoes) {
-      if (v.verdict === "SAVED_LOSS") {
-        savedLossCount++;
-        savedLossUnits += Math.max(0, v.savedUnits ?? 0);
-      } else if (v.verdict === "MISSED_WIN") {
-        missedWinCount++;
-        missedWinUnits += Math.abs(Math.min(0, v.savedUnits ?? 0));
-      }
+      if (v.verdict === "SAVED_LOSS") savedLossCount++;
+      else if (v.verdict === "MISSED_WIN") missedWinCount++;
     }
-    return { savedLossCount, savedLossUnits, missedWinCount, missedWinUnits };
+    return { savedLossCount, missedWinCount };
   }, [state.shadowVetoes]);
-  const shadow = lab?.shadow ?? { ...shadowFallback, shadowLiftPct: 0, winRateWithVeto: 0, winRateWithoutVeto: 0 };
-  const hasLift = !!lab;
-  const netShadowImpact = hasLift
-    ? Math.round((shadow.savedLossUnits - shadow.missedWinUnits) * 100) / 100
-    : m.savedCapital;
+  const shadowLift = lab?.shadow.shadowLiftPct ?? null;
+  const withVeto = lab?.shadow.winRateWithVeto ?? 0;
+  const withoutVeto = lab?.shadow.winRateWithoutVeto ?? 0;
+  const savedLossCount = lab?.shadow.savedLossCount ?? shadowFallback.savedLossCount;
+  const missedWinCount = lab?.shadow.missedWinCount ?? shadowFallback.missedWinCount;
+  const netShadowCount = savedLossCount - missedWinCount;
+  const hasLift = shadowLift != null;
 
-  /* CSV / JSON audit export (includes lockedAt + v3.1 ensemble metadata) */
+  /* CSV / JSON audit export (includes lockedAt + ensemble metadata) */
   function download(kind: "csv" | "json") {
     const data = rows.map((s) => ({
       id: s.id, match: s.matchInfo, league: s.league, sport: s.sport, line: s.line,
@@ -335,305 +385,298 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
     toast.success(`خروجی ${kind.toUpperCase()} ممیزی دانلود شد`);
   }
 
-  /* Chart c — profit by market family (top 8 by |profit|) */
-  const marketRows = useMemo(
-    () =>
-      Object.entries(m.marketStats)
-        .map(([family, s]) => ({ family, profit: s.profit, wins: s.wins, losses: s.losses }))
-        .sort((a, b) => Math.abs(b.profit) - Math.abs(a.profit))
-        .slice(0, 8),
-    [m.marketStats],
-  );
-  const maxAbsMarket = Math.max(1, ...marketRows.map((r) => Math.abs(r.profit)));
-
-  /* Chart b — winrate & profit per sport */
-  const sportRows = (["football", "tennis"] as const).map((k) => {
-    const s = m.sportStats[k];
-    return {
-      key: k,
-      label: k === "football" ? "⚽ فوتبال" : "🎾 تنیس",
-      winRate: s?.winRate ?? 0,
-      wins: s?.wins ?? 0,
-      losses: s?.losses ?? 0,
-      profit: s?.profit ?? 0,
-      settled: s?.settled ?? 0,
-    };
-  });
-
-  const lastEq = policyView.curve.length > 0
-    ? policyView.curve[policyView.curve.length - 1]
-    : null;
-  const equityData = policyView.curve.length > 0 ? policyView.curve : m.equityCurve;
+  const tooltipStyle = {
+    contentStyle: { background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 11 },
+    labelStyle: { color: "#8FA3BF" },
+  } as const;
 
   return (
     <div className="space-y-4" data-testid="ledger-view">
-      {/* ── 1. Analytical charts ─────────────────────────────────────────── */}
-      <Card className="glass p-4" data-testid="ledger-charts">
+      {/* ── 0. v3.2 Pure Hit-Rate header — 4 stat tiles ──────────────────── */}
+      <Card className="glass p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-bold text-cyan-200">📊 نمودارهای تحلیلی کارنامه</h2>
-          {/* v2.5 — stake-policy comparison switch */}
-          <div className="flex items-center gap-1 rounded-xl border border-slate-700/70 bg-secondary/60 p-1">
-            <button
-              onClick={() => setStakeView("KELLY")}
-              className={cn(
-                "rounded-lg px-2.5 py-1.5 text-[11px] transition-colors",
-                stakeView === "KELLY" ? "bg-emerald-500/15 text-emerald-300" : "text-muted-foreground hover:text-foreground",
-              )}
-              title="بازپخش کل تاریخچه با کلِی یک‌چهارم ۱٪ تا ۳.۵٪ بانک جاری — پیشنهادی"
-            >
-              🛡️ کلِی یک‌چهارم (۱٪–۳.۵٪ بانک — پیشنهادی)
-            </button>
-            <button
-              onClick={() => setStakeView("FLAT20")}
-              className={cn(
-                "rounded-lg px-2.5 py-1.5 text-[11px] transition-colors",
-                stakeView === "FLAT20" ? "bg-violet-500/15 text-violet-300" : "text-muted-foreground hover:text-foreground",
-              )}
-              title="بازپخش کل تاریخچه با استیک یکسان ۲۰ واحد (۲٪ بانک ۱۰۰۰ واحدی)"
-            >
-              📊 استیک یکسان (Flat 20u = 2% بانک)
-            </button>
+          <h2 className="flex items-center gap-2 text-sm font-bold text-emerald-200">
+            <ShieldCheck className="size-4 text-emerald-400" />
+            کارنامه تأییدشده — Pure Hit-Rate
+          </h2>
+          <span className="num rounded-md border border-slate-700 bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground" dir="ltr">
+            {noLossDenom} settled · {m.openCount} open
+          </span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {/* Pure Win Rate % */}
+          <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
+            <div className="text-[10px] text-muted-foreground">وین‌ریت خالص (Pure Win Rate %)</div>
+            <AnimatedNumber
+              value={pureWinRate}
+              decimals={1}
+              suffix="%"
+              className="mt-1 block text-2xl font-extrabold text-emerald-300"
+            />
+            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              WON ÷ (WON + LOST)
+            </div>
+          </div>
+          {/* No-Loss Rate % */}
+          <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3">
+            <div className="text-[10px] text-muted-foreground">نرخ بدون‌باخت (No-Loss Rate %)</div>
+            <AnimatedNumber
+              value={noLossRate}
+              decimals={1}
+              suffix="%"
+              className="mt-1 block text-2xl font-extrabold text-cyan-300"
+            />
+            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              (WON + PUSH) ÷ تسویه‌شده
+            </div>
+          </div>
+          {/* WON / PUSH / LOST counters */}
+          <div className="rounded-xl border border-slate-700/40 bg-secondary/30 p-3">
+            <div className="text-[10px] text-muted-foreground">حساب کل نتایج (WON / PUSH / LOST)</div>
+            <div className="mt-1.5 grid grid-cols-3 gap-1 text-center">
+              <div>
+                <AnimatedNumber value={m.wins} className="num block text-xl font-extrabold text-emerald-300" />
+                <div className="mt-0.5 text-[9px] font-bold text-emerald-200/80">WON</div>
+              </div>
+              <div>
+                <AnimatedNumber value={m.voids} className="num block text-xl font-extrabold text-slate-300" />
+                <div className="mt-0.5 text-[9px] font-bold text-slate-400">PUSH</div>
+              </div>
+              <div>
+                <AnimatedNumber value={m.losses} className="num block text-xl font-extrabold text-red-300" />
+                <div className="mt-0.5 text-[9px] font-bold text-red-200/80">LOST</div>
+              </div>
+            </div>
+          </div>
+          {/* Brier Score + ECE */}
+          <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-3">
+            <div className="text-[10px] text-muted-foreground">امتیاز بریر (Brier Score)</div>
+            {lab ? (
+              <>
+                <AnimatedNumber
+                  value={lab.brier}
+                  decimals={3}
+                  className="mt-1 block text-2xl font-extrabold text-violet-300"
+                />
+                <div className="num mt-1 text-[10px] text-violet-200/80" dir="ltr">
+                  ECE {(lab.ece * 100).toFixed(1)}%
+                </div>
+              </>
+            ) : (
+              <div className="mt-2 text-[11px] text-muted-foreground">بدون داده</div>
+            )}
           </div>
         </div>
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px]">
-          {/* v2.7.1 hotfix §2.3 — these headline chips read the SAME unified
-              arithmetic as the Overview tab (computeUnifiedBankrollMetrics via
-              computeMasterMetrics): bank, net profit and ROI are 100% identical
-              on both pages — the audited 20.0u contradiction is impossible. */}
-          <span className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-emerald-200">
-            بانک رسمی (پایه ۱٬۰۰۰u): <span className="num font-bold text-emerald-300" dir="ltr">{fmtUnits(m.bankroll, 1)}u</span>
-          </span>
-          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
-            سود خالص رسمی: <span className={cn("num font-bold", m.totalProfit >= 0 ? "text-emerald-300" : "text-red-300")} dir="ltr">{m.totalProfit >= 0 ? "+" : ""}{fmtUnits(m.totalProfit, 1)}u</span>
-          </span>
-          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-300">
-            ROI: <span className="num font-bold text-cyan-300" dir="ltr">{m.roi >= 0 ? "+" : ""}{m.roi}%</span>
-          </span>
-          <span className="rounded-lg border border-slate-800 bg-secondary/40 px-2.5 py-1 text-slate-400">
-            وین‌ریت: <span className="num font-bold text-violet-300" dir="ltr">{fmtUnits(m.winRate, 1)}%</span>
-          </span>
-          <span className="text-[10px] text-muted-foreground">
-            (بازپخش سیاست استیک جدا محاسبه می‌شود — فقط برای مقایسه؛ بازپخش {policyView.count} تسویه → بانک {fmtUnits(policyView.endBank, 1)}u)
-          </span>
-        </div>
+      </Card>
 
+      {/* ── 1. Bankroll-free analytic charts ─────────────────────────────── */}
+      <Card className="glass p-4" data-testid="ledger-charts">
+        <h2 className="mb-3 text-sm font-bold text-cyan-200">📊 نمودارهای تحلیلی Pure Hit-Rate</h2>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-          {/* a) Equity curve */}
-          <div className="flex min-h-[232px] flex-col rounded-xl border border-slate-800/80 bg-secondary/20 p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-bold text-slate-200">منحنی رشد سرمایه (Equity Curve)</span>
-              <span className="num text-[10px] font-bold text-emerald-300" dir="ltr">
-                {lastEq ? `${fmtUnits(lastEq.bankroll, 1)}u` : "—"}
+          {/* a) Cumulative Win-Rate + No-Loss Rate trend */}
+          <div
+            className="rounded-xl border border-slate-800/80 bg-secondary/20 p-3 xl:col-span-3"
+            data-testid="ledger-trend-chart"
+          >
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-200">
+                <TrendingUp className="size-3.5 text-emerald-400" />
+                روند تجمعی Win Rate و No-Loss Rate (%)
               </span>
-            </div>
-            {equityData.length === 0 ? (
-              <div className="grid flex-1 place-items-center text-[11px] text-muted-foreground">
-                داده‌ای برای منحنی سرمایه ثبت نشده است
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200">
+                  Win Rate: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.winRate.toFixed(1) : "0.0"}%</span>
+                </span>
+                <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
+                  No-Loss Rate: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.noLossRate.toFixed(1) : "0.0"}%</span>
+                </span>
+                <span className="num text-muted-foreground" dir="ltr">
+                  {trend.settled} تسویه · {trend.decided} تعیین‌شده
+                </span>
               </div>
+            </div>
+            {trend.pts.length === 0 ? (
+              <EmptyState
+                icon="📈"
+                title="داده‌ای برای روند تجمعی ثبت نشده است"
+                sub="پس از نخستین تسویه، وین‌ریت خالص و نرخ بدون‌باخت تجمعی همین‌جا رسم می‌شوند."
+              />
             ) : (
-              <div className="h-44" dir="ltr" style={{ filter: "drop-shadow(0 0 8px rgba(52, 211, 153, 0.18))" }}>
+              <div className="h-56" dir="ltr" style={{ filter: "drop-shadow(0 0 8px rgba(0, 229, 255, 0.12))" }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={equityData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="ledgerEquity" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#34D399" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#34D399" stopOpacity={0.03} />
-                      </linearGradient>
-                    </defs>
+                  <LineChart data={trend.pts} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
                     <XAxis
-                      dataKey="date"
+                      dataKey="label"
                       tick={{ fill: "#8FA3BF", fontSize: 9 }}
-                      tickFormatter={(d: string) => String(d).slice(5)}
-                      minTickGap={20}
+                      minTickGap={24}
                     />
-                    <YAxis tick={{ fill: "#8FA3BF", fontSize: 9 }} width={46} domain={["auto", "auto"]} />
-                    <Tooltip
-                      contentStyle={{ background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 11 }}
-                      labelStyle={{ color: "#8FA3BF" }}
-                      formatter={(v) => [`${fmtUnits(Number(v), 1)}u`, "بانک"]}
+                    <YAxis
+                      domain={[0, 100]}
+                      ticks={[0, 25, 50, 75, 100]}
+                      tick={{ fill: "#8FA3BF", fontSize: 9 }}
+                      width={38}
+                      tickFormatter={(v: number) => `${v}%`}
                     />
-                    <Area
+                    <Tooltip {...tooltipStyle} formatter={(v, n) => [`${Number(v).toFixed(1)}%`, String(n)]} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
+                    <Line
                       type="monotone"
-                      dataKey="bankroll"
+                      dataKey="winRate"
+                      name="وین‌ریت خالص تجمعی (Win Rate = WON/تعیین‌شده)"
                       stroke="#34D399"
                       strokeWidth={2}
-                      fill="url(#ledgerEquity)"
                       dot={false}
                       activeDot={{ r: 3 }}
                     />
-                  </AreaChart>
+                    <Line
+                      type="monotone"
+                      dataKey="noLossRate"
+                      name="نرخ بدون‌باخت تجمعی (No-Loss = (WON+PUSH)/تسویه)"
+                      stroke="#00E5FF"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 3 }}
+                    />
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
             )}
           </div>
 
-          {/* b) Winrate & profit by sport */}
-          <div className="flex min-h-[232px] flex-col rounded-xl border border-slate-800/80 bg-secondary/20 p-3">
-            <div className="mb-2 text-[11px] font-bold text-slate-200">وین‌ریت و سود به تفکیک ورزش</div>
-            <div className="flex flex-1 flex-col justify-center gap-3">
-              {sportRows.map((sp) => (
-                <div key={sp.key} className="rounded-xl border border-slate-800/80 bg-[#0A0F1C]/50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold text-slate-200">{sp.label}</span>
-                    <span
-                      dir="ltr"
-                      className={cn("num text-[11px] font-bold", sp.profit >= 0 ? "text-emerald-300" : "text-red-300")}
-                    >
-                      {sp.profit >= 0 ? "+" : ""}{fmtUnits(sp.profit, 1)}u
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
-                      <div
-                        className={cn(
-                          "h-full rounded-full",
-                          sp.key === "football"
-                            ? "bg-gradient-to-r from-cyan-400 to-cyan-300/60"
-                            : "bg-gradient-to-r from-violet-400 to-violet-300/60",
-                        )}
-                        style={{ width: `${Math.min(100, Math.max(0, sp.winRate))}%` }}
-                      />
-                    </div>
-                    <span
-                      dir="ltr"
-                      className={cn("num w-12 shrink-0 text-left text-[10px] font-bold", sp.key === "football" ? "text-cyan-300" : "text-violet-300")}
-                    >
-                      {sp.winRate.toFixed(0)}%
-                    </span>
-                  </div>
-                  <div className="mt-1.5 text-[10px] text-muted-foreground">
-                    {sp.wins} برد · {sp.losses} باخت · {sp.settled} تسویه‌شده
-                  </div>
-                </div>
-              ))}
+          {/* b) Per-shield-type performance bar chart */}
+          <div className="rounded-xl border border-slate-800/80 bg-secondary/20 p-3 xl:col-span-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-slate-200">عملکرد هر نوع سپر و بازار</span>
+              <span className="text-[9px] text-muted-foreground">معادل مارکتی: DNB · AH +0.25 · دو نتیجه · توتال آسیایی</span>
             </div>
+            {shieldChartData.length === 0 ? (
+              <EmptyState
+                icon="🛡️"
+                title="آمار سپرها ثبت نشده است"
+                sub="پس از تسویه سیگنال‌های سپر، وین‌ریت و نرخ بدون‌باخت هر نوع سپر همین‌جا رسم می‌شود."
+              />
+            ) : (
+              <div className="h-52" dir="ltr">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={shieldChartData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fill: "#8FA3BF", fontSize: 9 }} interval={0} />
+                    <YAxis
+                      domain={[0, 100]}
+                      ticks={[0, 25, 50, 75, 100]}
+                      tick={{ fill: "#8FA3BF", fontSize: 9 }}
+                      width={38}
+                      tickFormatter={(v: number) => `${v}%`}
+                    />
+                    <Tooltip {...tooltipStyle} formatter={(v, n) => [`${Number(v).toFixed(1)}%`, String(n)]} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
+                    <Bar dataKey="winRate" name="Win Rate %" fill="#34D399" radius={[4, 4, 0, 0]} maxBarSize={38} />
+                    <Bar dataKey="noLossRate" name="No-Loss Rate %" fill="#00E5FF" radius={[4, 4, 0, 0]} maxBarSize={38} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
 
-          {/* c) Profit by market family */}
-          <div className="flex min-h-[232px] flex-col rounded-xl border border-slate-800/80 bg-secondary/20 p-3">
-            <div className="mb-2 text-[11px] font-bold text-slate-200">سود به تفکیک خانواده مارکت (Top 8)</div>
+          {/* b-appendix) «عملکرد بازارها» — top-6 markets by settled count */}
+          <div className="rounded-xl border border-slate-800/80 bg-secondary/20 p-3">
+            <div className="mb-2 text-[11px] font-bold text-slate-200">عملکرد بازارها</div>
             {marketRows.length === 0 ? (
-              <div className="grid flex-1 place-items-center text-[11px] text-muted-foreground">
-                آمار مارکتی برای نمایش نیست
-              </div>
+              <EmptyState
+                icon="📋"
+                title="آمار مارکتی برای نمایش نیست"
+                sub="پس از تسویه سیگنال‌ها، شش بازار پرتسویه با نرخ برد و نرخ بدون‌باخت همین‌جا فهرست می‌شوند."
+              />
             ) : (
-              <div className="flex flex-1 flex-col justify-center gap-1.5">
-                {marketRows.map((r) => {
-                  const pct = Math.max(2, Math.round((Math.abs(r.profit) / maxAbsMarket) * 100));
-                  const pos = r.profit >= 0;
-                  return (
-                    <div
-                      key={r.family}
-                      className="flex items-center gap-2 text-[11px]"
-                      title={`${r.family} — ${r.wins}W/${r.losses}L — ${fmtUnits(r.profit, 1)}u`}
-                    >
-                      <span dir="ltr" className="w-28 shrink-0 truncate text-right text-slate-300">{r.family}</span>
-                      <div dir="ltr" className="relative h-2.5 flex-1 overflow-hidden rounded-full bg-slate-800/80">
-                        <div
-                          className={cn(
-                            "absolute inset-y-0 left-0 rounded-full",
-                            pos
-                              ? "bg-gradient-to-r from-emerald-400/90 to-emerald-400/25"
-                              : "bg-gradient-to-r from-red-400/90 to-red-400/25",
-                          )}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
+              <div className="flex flex-col justify-center gap-2">
+                {marketRows.map((r) => (
+                  <div key={r.label} className="rounded-lg border border-slate-800/70 bg-[#0A0F1C]/50 p-2">
+                    <div className="flex items-center justify-between gap-2">
                       <span
                         dir="ltr"
-                        className={cn("num w-16 shrink-0 text-left text-[10px] font-bold", pos ? "text-emerald-300" : "text-red-300")}
+                        className="min-w-0 truncate text-[10px] font-bold text-slate-200"
+                        title={r.label}
                       >
-                        {fmtUnits(r.profit, 1)}u
+                        {r.label}
+                      </span>
+                      <span className="num shrink-0 text-[9px] text-slate-400" dir="ltr">
+                        {r.settled} تسویه
                       </span>
                     </div>
-                  );
-                })}
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-[9px] text-emerald-300/80">برد</span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-emerald-400"
+                          style={{ width: `${Math.min(100, Math.max(0, pct0(r.winRate)))}%` }}
+                        />
+                      </div>
+                      <span dir="ltr" className="num w-11 shrink-0 text-left text-[9px] font-bold text-emerald-300">
+                        {pct0(r.winRate).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-[9px] text-cyan-300/80">پوش</span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-cyan-400"
+                          style={{ width: `${Math.min(100, Math.max(0, pct0(r.noLossRate)))}%` }}
+                        />
+                      </div>
+                      <span dir="ltr" className="num w-11 shrink-0 text-left text-[9px] font-bold text-cyan-300">
+                        {pct0(r.noLossRate).toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* c) Tier S / A / B accuracy comparison */}
+          <div className="rounded-xl border border-slate-800/80 bg-secondary/20 p-3 xl:col-span-3">
+            <div className="mb-2 text-[11px] font-bold text-slate-200">مقایسه دقت واقعی Tier S / A / B</div>
+            {tierChartData.length === 0 ? (
+              <EmptyState
+                icon="🏅"
+                title="آمار تایرها ثبت نشده است"
+                sub="پس از تسویه سیگنال‌های تایر S/A/B، دقت واقعی هر تایر همین‌جا رسم می‌شود."
+              />
+            ) : (
+              <div className="h-52" dir="ltr">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={tierChartData} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fill: "#8FA3BF", fontSize: 9 }} interval={0} />
+                    <YAxis
+                      domain={[0, 100]}
+                      ticks={[0, 25, 50, 75, 100]}
+                      tick={{ fill: "#8FA3BF", fontSize: 9 }}
+                      width={38}
+                      tickFormatter={(v: number) => `${v}%`}
+                    />
+                    <Tooltip {...tooltipStyle} formatter={(v, n) => [`${Number(v).toFixed(1)}%`, String(n)]} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
+                    <Bar dataKey="winRate" name="Win Rate %" fill="#F5B940" radius={[4, 4, 0, 0]} maxBarSize={38} />
+                    <Bar dataKey="noLossRate" name="No-Loss Rate %" fill="#8B5CF6" radius={[4, 4, 0, 0]} maxBarSize={38} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             )}
           </div>
         </div>
-
-        {/* v3.1 — d) Cumulative Win-Rate (pure) + No-Loss Rate dual-line trend */}
-        <div className="mt-3 rounded-xl border border-slate-800/80 bg-secondary/20 p-3" data-testid="ledger-trend-chart">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-200">
-              <TrendingUp className="size-3.5 text-emerald-400" />
-              روند تجمعی وین‌ریت خالص و نرخ سربه‌سر (بدون باخت)
-            </span>
-            <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200">
-                وین‌ریت خالص: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.winRate.toFixed(1) : "0.0"}%</span>
-              </span>
-              <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
-                نرخ سربه‌سر: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.noLossRate.toFixed(1) : "0.0"}%</span>
-              </span>
-              <span className="num text-muted-foreground" dir="ltr">
-                {trend.settled} تسویه · {trend.decided} تعیین‌شده
-              </span>
-            </div>
-          </div>
-          {trend.pts.length === 0 ? (
-            <div className="grid h-44 place-items-center text-[11px] text-muted-foreground">
-              رکورد تسویه‌شده‌ای برای رسم روند تجمعی ثبت نشده است
-            </div>
-          ) : (
-            <div className="h-56" dir="ltr" style={{ filter: "drop-shadow(0 0 8px rgba(0, 229, 255, 0.12))" }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend.pts} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
-                  <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="label"
-                    tick={{ fill: "#8FA3BF", fontSize: 9 }}
-                    minTickGap={24}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    ticks={[0, 25, 50, 75, 100]}
-                    tick={{ fill: "#8FA3BF", fontSize: 9 }}
-                    width={38}
-                    tickFormatter={(v: number) => `${v}%`}
-                  />
-                  <Tooltip
-                    contentStyle={{ background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 11 }}
-                    labelStyle={{ color: "#8FA3BF" }}
-                    formatter={(v, n) => [`${Number(v).toFixed(1)}%`, String(n)]}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
-                  <Line
-                    type="monotone"
-                    dataKey="winRate"
-                    name="وین‌ریت خالص تجمعی (WON/تعیین‌شده)"
-                    stroke="#34D399"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 3 }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="noLossRate"
-                    name="نرخ سربه‌سر تجمعی ((WON+VOID)/تسویه)"
-                    stroke="#00E5FF"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 3 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
       </Card>
 
-      {/* ── 2. v3.1 Agent Lab — per-tier & per-shield breakdown ─────────── */}
+      {/* ── 2. Agent Lab — per-tier & per-shield breakdown ───────────────── */}
       <Card className="glass p-4" data-testid="agentlab-breakdown">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-sm font-bold text-violet-300">
             <Layers className="size-4 text-violet-400" />
-            تفکیک عملکرد تایرها و انواع سپر (SuperAgent v3.1)
+            تفکیک عملکرد تایرها و انواع سپر (SuperAgent v3.2)
           </h2>
           <span className="rounded-md border border-slate-700 bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
-            وین‌ریت = WON/تعیین‌شده · نرخ سربه‌سر = (WON+VOID)/تسویه
+            وین‌ریت = WON/تعیین‌شده · نرخ بدون‌باخت = (WON+PUSH)/تسویه
           </span>
         </div>
 
@@ -652,10 +695,10 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
                     <span className="text-emerald-300">برد <span className="num font-bold" dir="ltr">{st.wins}</span></span>
                     <span className="text-red-300">باخت <span className="num font-bold" dir="ltr">{st.losses}</span></span>
-                    <span className="text-slate-400">ابطال <span className="num font-bold" dir="ltr">{st.voids}</span></span>
+                    <span className="text-slate-400">پوش <span className="num font-bold" dir="ltr">{st.voids}</span></span>
                   </div>
                   <RateBar label="وین‌ریت خالص" value={st.winRate} tone="emerald" />
-                  <RateBar label="نرخ سربه‌سر" value={st.noLossRate} tone="cyan" />
+                  <RateBar label="نرخ بدون‌باخت" value={st.noLossRate} tone="cyan" />
                 </div>
               ) : (
                 <div className="grid h-[62px] place-items-center rounded-lg border border-dashed border-slate-700/60 bg-secondary/30 text-[11px] text-muted-foreground">
@@ -667,7 +710,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
         </div>
         {!tierHasData && (
           <p className="mt-2 text-[10px] leading-5 text-muted-foreground">
-            بلوک Agent Lab هنوز برای این payload فعال نیست — پس از اولین اجرای موتور v3.1، آمار تایرها همین‌جا ظاهر می‌شود.
+            آمار تایرها هنوز ثبت نشده است — پس از تسویه سیگنال‌های تایر S/A/B، همین‌جا ظاهر می‌شود.
           </p>
         )}
 
@@ -677,7 +720,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
             <span className="text-[11px] font-bold text-slate-200">عملکرد به تفکیک نوع سپر (Push-Shield Engine)</span>
             <span className="text-[9px] text-muted-foreground">معادل مارکتی: DNB · AH +0.25 · دو نتیجه · توتال آسیایی</span>
           </div>
-          {shieldRows.length === 0 || !shieldHasData ? (
+          {!shieldHasData ? (
             <div className="grid h-16 place-items-center rounded-lg border border-dashed border-slate-700/60 bg-secondary/30 text-[11px] text-muted-foreground">
               بدون داده
             </div>
@@ -689,9 +732,9 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     ["نوع سپر", ""],
                     ["برد", ""],
                     ["باخت", "hidden sm:table-cell"],
-                    ["ابطال", "hidden sm:table-cell"],
+                    ["پوش", "hidden sm:table-cell"],
                     ["وین‌ریت خالص", ""],
-                    ["نرخ سربه‌سر", ""],
+                    ["نرخ بدون‌باخت", ""],
                     ["تسویه", "hidden md:table-cell"],
                   ].map(([h, hideCls]) => (
                     <th
@@ -707,15 +750,15 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                 </tr>
               </thead>
               <tbody>
-                {shieldRows.map(({ key, label, buckets, st }) => (
+                {shieldRows.map(({ key, st }) => (
                   <tr key={key} className="transition-colors hover:bg-secondary/40">
                     <td className="px-2 py-1.5">
                       <div className="flex items-center gap-1.5">
                         <ShieldBadge shieldType={key} />
-                        {key === label && <span className="text-[10px] text-slate-300">{label}</span>}
+                        {key === shieldFa(key) && <span className="text-[10px] text-slate-300" dir="ltr">{key}</span>}
                       </div>
-                      {buckets && (
-                        <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">{buckets}</div>
+                      {SHIELD_BUCKETS[key] && (
+                        <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">{SHIELD_BUCKETS[key]}</div>
                       )}
                     </td>
                     <td className="num px-2 py-1.5 font-bold text-emerald-300">{st?.wins ?? 0}</td>
@@ -831,7 +874,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
         </div>
       </Card>
 
-      {/* ── 4. Verified ledger rows ──────────────────────────────────────── */}
+      {/* ── 4. Verified ledger rows — static rich rows (bankroll-free) ───── */}
       {rows.length === 0 ? (
         <EmptyState
           icon="🔐"
@@ -839,224 +882,126 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           sub="پس از پایان هر مسابقه، موتور تسویه نتیجه ESPN را با قوانین ۹۰ دقیقه فوتبال / تکمیل کامل تنیس ثبت و هش می‌کند."
         />
       ) : (
-        <div className="space-y-2">
-          {rows.map((s) => (
-            <div key={s.id} className="glass overflow-hidden" data-testid="ledger-row">
-              <div
-                role="button"
-                tabIndex={0}
-                aria-expanded={expanded === s.id}
-                onClick={() => toggle(s.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    toggle(s.id);
-                  }
-                }}
-                className="flex w-full cursor-pointer flex-wrap items-center justify-between gap-2 p-3 text-right transition-colors hover:bg-secondary/40"
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <span className="text-base">{s.sport === "tennis" ? "🎾" : "⚽"}</span>
-                  <TeamAvatar name={s.homeName || s.matchInfo} logo={s.homeLogo} size={24} />
-                  <TeamAvatar name={s.awayName || s.matchInfo} logo={s.awayLogo} size={24} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <span className="truncate text-xs font-bold text-slate-100">{s.matchInfo}</span>
-                      {/* v2.7.2 §3 — FT column: REAL set scores from the ESPN
-                          linescores feed, shown on every tennis ledger row. */}
-                      {s.sport === "tennis" && s.setResult && (
-                        <span
-                          className="num rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
-                          dir="ltr"
-                          title="نتیجه واقعی ست‌ها از فید ESPN (linescores)"
-                        >
-                          FT {s.setResult}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] border-collapse text-right text-[11px]">
+            <thead>
+              <tr>
+                {[
+                  "مسابقه",
+                  "ورزش و لیگ",
+                  "بازار محافظت‌شده",
+                  "Tier",
+                  "احتمال کالیبره",
+                  "نتیجه",
+                  "FT",
+                  "تاریخ تسویه",
+                ].map((h) => (
+                  <th
+                    key={h}
+                    className="whitespace-nowrap border-b border-slate-800 px-2 py-2 text-[10px] font-semibold text-muted-foreground"
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => {
+                const calProbRaw = (s.noLossProb ?? s.modelProb) * 100;
+                const calProb = Number.isFinite(calProbRaw) ? `${calProbRaw.toFixed(1)}%` : "—";
+                const ftText =
+                  s.sport === "tennis"
+                    ? (s.setResult ?? "—")
+                    : s.homeScore != null && s.awayScore != null
+                      ? `${s.homeScore}-${s.awayScore}`
+                      : "—";
+                const res = resultBadge(s.status);
+                return (
+                  <tr
+                    key={s.id}
+                    className="border-b border-slate-800/60 align-middle transition-colors hover:bg-secondary/40"
+                    data-testid="ledger-row"
+                  >
+                    {/* مسابقه */}
+                    <td className="max-w-[220px] px-2 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-base">{s.sport === "tennis" ? "🎾" : "⚽"}</span>
+                        <TeamAvatar name={s.homeName || s.matchInfo} logo={s.homeLogo} size={22} />
+                        <TeamAvatar name={s.awayName || s.matchInfo} logo={s.awayLogo} size={22} />
+                        <span className="truncate font-bold text-slate-100" title={s.matchInfo}>
+                          {s.matchInfo}
                         </span>
-                      )}
-                      <span dir="ltr" className={cn("num text-[11px] font-bold", statusColor(s.status))}>
-                        {s.status === "WON"
-                          ? `+${fmtUnits(s.netProfit ?? 0)}`
-                          : s.status === "LOST"
-                            ? fmtUnits(s.netProfit ?? 0)
-                            : s.status === "VOID"
-                              ? "ابطال"
-                              : s.status}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 flex items-center gap-1 truncate text-[10px] text-muted-foreground">
-                      <span className="truncate">{s.league}</span>
-                      <span>·</span>
-                      <span className="truncate" dir="ltr">{officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}</span>
-                      <span>@</span>
-                      <span className="num" dir="ltr">{fmtPrice(s.price)}</span>
-                    </div>
-                  </div>
-                </div>
-                {/* v3.1 — confidence tier + push-shield badges (desktop only;
-                    on mobile they render inside the expanded detail panel). */}
-                <div
-                  className="hidden shrink-0 items-center gap-1 md:flex"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <TierBadge tier={s.tier} />
-                  <ShieldBadge shieldType={s.shieldType} />
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span onClick={(e) => e.stopPropagation()}>
-                    <HashChip hash={s.shaHash} onClick={() => setVerify(s)} />
-                  </span>
-                  <ChevronDown className={cn("size-4 text-muted-foreground transition-transform", expanded === s.id && "rotate-180")} />
-                </div>
-              </div>
-
-              {expanded === s.id && (
-                <div className="border-t border-slate-800/70 bg-secondary/30 p-3">
-                  {/* v3.1 — SuperAgent ensemble metadata */}
-                  <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                    <TierBadge tier={s.tier} />
-                    <ShieldBadge shieldType={s.shieldType} />
-                    {s.noLossProb != null && (
-                      <span className="rounded-md border border-slate-700 bg-secondary px-1.5 py-0.5 text-[10px] text-slate-300">
-                        احتمال سربه‌سر: <NoLossChip value={s.noLossProb} />
-                      </span>
-                    )}
-                    {s.consensusPct != null && (
-                      <span
-                        className="num rounded-md border border-slate-700 bg-secondary px-1.5 py-0.5 text-[10px] text-slate-300"
-                        dir="ltr"
-                        title="اجماع انسامبل SuperAgent"
-                      >
-                        consensus {s.consensusPct}%
-                      </span>
-                    )}
-                    {s.sharpAlert && (
-                      <span
-                        className="rounded-md border border-red-400/40 bg-red-400/10 px-1.5 py-0.5 text-[10px] font-bold text-red-300"
-                        dir="ltr"
-                        title="هشدار واگرایی شارپ‌ها"
-                      >
-                        SHARP ALERT
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
-                    <div>
-                      <span className="text-muted-foreground">خط تولید:</span>{" "}
-                      <span className="font-bold text-slate-200">{lineLabel(s.line)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">استیک ثبت‌شده:</span>{" "}
-                      <span className="num" dir="ltr">{fmtUnits(s.stake, 0)}u</span>{" "}
-                      <span className="text-[10px] text-slate-400">({s.stakeMode})</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">استیک نمای سیاست:</span>{" "}
-                      <span className="num text-amber-300" dir="ltr">
-                        {fmtUnits(policyView.rowsMap.get(s.id)?.stake ?? s.stake, 1)}u
-                      </span>{" "}
-                      <span className="text-[10px] text-slate-400">
-                        ({stakeView === "KELLY" ? "Quarter-Kelly" : "Flat 20u"} · سود: {fmtUnits(policyView.rowsMap.get(s.id)?.netProfit ?? 0, 1)}u)
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">احتمال مدل:</span>{" "}
-                      <span className="num" dir="ltr">{(s.modelProb * 100).toFixed(1)}%</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">زمان قفل پیش‌ازبازی:</span>{" "}
-                      <span className="num text-violet-300" dir="ltr">{formatSafeDateTime(s.lockedAt)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">زمان تسویه:</span>{" "}
-                      <span className="num text-cyan-300" dir="ltr">{formatSafeDateTime(s.settledAt)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">EV:</span>{" "}
-                      <span className="num" dir="ltr">
-                        {s.evPct >= 0 ? "+" : ""}{s.evPct.toFixed(1)}%
-                      </span>
-                    </div>
-                    {/* v3.1 — unified FT/sets display: tennis = ESPN set scores,
-                        football = final ESPN scoreline "H-A". */}
-                    <div>
-                      <span className="text-muted-foreground">نتیجه نهایی (FT):</span>{" "}
-                      {s.sport === "tennis" ? (
-                        s.setResult ? (
-                          <span
-                            className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
-                            dir="ltr"
-                            title="نتیجه واقعی ست‌ها از فید ESPN (linescores)"
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <HashChip hash={s.shaHash} onClick={() => setVerify(s)} />
+                        {s.espnUrl ? (
+                          <a
+                            href={s.espnUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 rounded-md border border-slate-700 px-1.5 py-0.5 text-[9px] text-slate-300 transition-colors hover:border-cyan-500/40"
+                            title="مشاهده در ESPN"
                           >
-                            {s.setResult}
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-slate-500">از فید ESPN در دسترس نیست</span>
-                        )
-                      ) : s.homeScore != null && s.awayScore != null ? (
-                        <span
-                          className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
-                          dir="ltr"
-                          title="نتیجه نهایی از فید ESPN"
-                        >
-                          {s.homeScore}-{s.awayScore}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-slate-500">از فید ESPN در دسترس نیست</span>
+                            <ExternalLink className="size-3" /> espn.com
+                          </a>
+                        ) : null}
+                      </div>
+                    </td>
+                    {/* ورزش و لیگ */}
+                    <td className="max-w-[160px] px-2 py-2">
+                      <div className="flex items-center gap-1 text-slate-200">
+                        <span aria-hidden>{sportGlyph(s.sport)}</span>
+                        <span className="truncate" title={s.league}>{s.league}</span>
+                      </div>
+                    </td>
+                    {/* بازار محافظت‌شده */}
+                    <td className="max-w-[260px] px-2 py-2">
+                      <div className="truncate text-slate-300" dir="ltr" title={officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}>
+                        {officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}
+                      </div>
+                      {s.shieldType && (
+                        <div className="mt-1">
+                          <ShieldBadge shieldType={s.shieldType} />
+                        </div>
                       )}
-                    </div>
-                  </div>
-
-                  {s.legs && s.legs.length > 0 && (
-                    <ul className="mt-2 space-y-1 text-[10px] text-slate-400">
-                      {s.legs.map((l, i) => (
-                        <li key={i} className="flex items-center gap-1.5">
-                          <span className="text-emerald-400">·</span>
-                          <span className="truncate" dir="ltr">{l.label}</span>
-                          <span className="num shrink-0" dir="ltr">
-                            @ {fmtPrice(l.price)} ({(l.prob * 100).toFixed(0)}%)
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    {/* full SHA-256 chip — click to verify */}
-                    <button
-                      type="button"
-                      onClick={() => setVerify(s)}
-                      title="کلیک = راستی‌آزمایی هش"
-                      dir="ltr"
-                      className="num break-all rounded-md border border-slate-700 bg-[#0A0F1C] px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:border-emerald-500/50"
-                    >
-                      SHA-256 {s.shaHash}
-                    </button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 border-emerald-500/40 text-[10px] text-emerald-300"
-                      onClick={() => setVerify(s)}
-                    >
-                      <ShieldCheck className="size-3" /> راستی‌آزمایی هش
-                    </Button>
-                    <a
-                      href={s.espnUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex h-7 items-center gap-1 rounded-md border border-slate-700 px-2 text-[10px] text-slate-300 transition-colors hover:border-cyan-500/40"
-                    >
-                      <ExternalLink className="size-3" /> espn.com
-                    </a>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+                    </td>
+                    {/* Tier */}
+                    <td className="whitespace-nowrap px-2 py-2">
+                      {s.tier ? <TierBadge tier={s.tier} /> : <span className="num text-slate-500">—</span>}
+                    </td>
+                    {/* احتمال کالیبره */}
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <span className="num font-bold text-cyan-300" dir="ltr">{calProb}</span>
+                    </td>
+                    {/* نتیجه */}
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <span className={cn("inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-bold", res.cls)}>
+                        {res.text}
+                      </span>
+                    </td>
+                    {/* FT */}
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <span
+                        className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
+                        dir="ltr"
+                        title="نتیجه واقعی از فید ESPN (ست‌های تنیس / نتیجه نهایی فوتبال)"
+                      >
+                        {ftText}
+                      </span>
+                    </td>
+                    {/* تاریخ تسویه */}
+                    <td className="whitespace-nowrap px-2 py-2">
+                      <span className="num text-slate-300" dir="ltr">{formatSafeDateTime(s.settledAt)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* ── 5. Shadow Ledger Tracker (v3.1) ──────────────────────────────── */}
+      {/* ── 5. Shadow Ledger Tracker (count-based, v3.2) ─────────────────── */}
       <Card className="glass border-red-500/20 p-4" data-testid="shadow-tracker">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-sm font-bold text-red-300">
@@ -1068,21 +1013,21 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           </span>
         </div>
 
-        {/* v3.1 summary — Shadow Win-Rate Lift headline + saved/missed economics */}
+        {/* v3.2 summary — Shadow Win-Rate Lift headline + veto counters (no units) */}
         <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3" data-testid="shadow-lift">
             <div className="text-[10px] text-muted-foreground">ارتفاع وین‌ریت سایه (Shadow Win-Rate Lift)</div>
             {hasLift ? (
               <>
                 <AnimatedNumber
-                  value={shadow.shadowLiftPct}
+                  value={shadowLift}
                   decimals={1}
-                  prefix={shadow.shadowLiftPct >= 0 ? "+" : ""}
+                  prefix={shadowLift >= 0 ? "+" : ""}
                   suffix="pp"
                   className="mt-1 block text-xl font-extrabold neon-cyan"
                 />
                 <div className="num mt-1 text-[10px] text-slate-400" dir="ltr">
-                  with-veto {fmtPct(shadow.winRateWithVeto)} · without-veto {fmtPct(shadow.winRateWithoutVeto)}
+                  with-veto {fmtPct(withVeto)} · without-veto {fmtPct(withoutVeto)}
                 </div>
               </>
             ) : (
@@ -1092,35 +1037,35 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
             <div className="text-[10px] text-muted-foreground">Saved Losses — وتوی نجات‌دهنده</div>
             <AnimatedNumber
-              value={shadow.savedLossCount}
+              value={savedLossCount}
               decimals={0}
               className="mt-1 block text-xl font-extrabold neon-emerald"
             />
-            <div className="num mt-1 text-[10px] text-emerald-200/80" dir="ltr">
-              {fmtUnits(shadow.savedLossUnits, 1)}u سرمایه نجات‌یافته
+            <div className="mt-1 text-[10px] text-emerald-200/80">
+              تعداد وتوهایی که یک باخت قطعی را حذف کردند
             </div>
           </div>
           <div className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-3">
             <div className="text-[10px] text-muted-foreground">Missed Wins — فرصت ازدست‌رفته</div>
             <AnimatedNumber
-              value={shadow.missedWinCount}
+              value={missedWinCount}
               decimals={0}
               className="mt-1 block text-xl font-extrabold text-amber-300"
             />
-            <div className="num mt-1 text-[10px] text-amber-200/80" dir="ltr">
-              {fmtUnits(shadow.missedWinUnits, 1)}u سود ازدست‌رفته
+            <div className="mt-1 text-[10px] text-amber-200/80">
+              تعداد برد‌هایی که بدون وتو از دست می‌رفت
             </div>
           </div>
           <div className="rounded-xl border border-slate-700/40 bg-secondary/30 p-3">
-            <div className="text-[10px] text-muted-foreground">برآیند خالص وتو (Net Shadow Impact)</div>
+            <div className="text-[10px] text-muted-foreground">برآیند خالص وتو (تفاضل شمارش)</div>
             <AnimatedNumber
-              value={netShadowImpact}
-              decimals={1}
-              suffix="u"
-              className={cn("mt-1 block text-xl font-extrabold", netShadowImpact >= 0 ? "neon-cyan" : "text-red-300")}
+              value={netShadowCount}
+              decimals={0}
+              prefix={netShadowCount >= 0 ? "+" : ""}
+              className={cn("mt-1 block text-xl font-extrabold", netShadowCount >= 0 ? "neon-cyan" : "text-red-300")}
             />
             <div className="mt-1 text-[10px] text-slate-400">
-              نجات منهای فرصت ازدست‌رفته
+              تعداد نجات منهای فرصت ازدست‌رفته
             </div>
           </div>
         </div>
@@ -1140,7 +1085,6 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     ["دلیل وتو", "hidden lg:table-cell"],
                     ["نتیجه واقعی بازی", ""],
                     ["برچسب نتیجه وتو", ""],
-                    ["واحدها", ""],
                     ["زمان تعیین تکلیف", "hidden xl:table-cell"],
                   ].map(([h, hideCls]) => (
                     <th
@@ -1158,11 +1102,10 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
               <tbody>
                 {state.shadowVetoes.map((v) => {
                   const tag = verdictTag(v);
-                  const units = signedUnits(v);
                   const sharp = isSharpDivergence(v.reason);
                   // v2.7.1 §1 — the tracker renders the engine's PRE-VETO pick
                   // with the official bookmaker name and the REAL team names
-                  // (from the representative fixture), odds and reference stake.
+                  // (from the representative fixture).
                   const [repHome, repAway] = (v.repMatch ?? "").includes(" vs ")
                     ? (v.repMatch ?? "").split(" vs ")
                     : ["Home", "Away"];
@@ -1198,8 +1141,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                           {betline}
                         </div>
                         <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">
-                          @ {v.price != null ? v.price.toFixed(2) : "—"} · Ref Stake{" "}
-                          {v.savedUnits != null && v.savedUnits > 0 ? v.savedUnits.toFixed(0) : "—"}u
+                          @ {v.price != null ? v.price.toFixed(2) : "—"}
                         </div>
                       </td>
                       <td className="hidden max-w-[230px] px-2 py-2 lg:table-cell" title={v.reason}>
@@ -1235,9 +1177,6 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                           {tag.text}
                         </span>
                       </td>
-                      <td className="num whitespace-nowrap px-2 py-2 font-bold" dir="ltr" title={units.title}>
-                        <span className={units.cls}>{units.text}</span>
-                      </td>
                       <td className="num hidden whitespace-nowrap px-2 py-2 text-slate-400 xl:table-cell" dir="ltr">
                         {formatSafeDateTime(v.decidedAt)}
                       </td>
@@ -1263,15 +1202,19 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
             <div className="space-y-2 text-xs">
               <p className="text-muted-foreground">
                 هش زیر پیش از شروع مسابقه روی {verify.matchInfo} قفل شده است. برای ممیزی مستقل، payload سیگنال
-                (matchInfo + market + price + prob + stake + issuedAt) را با همین هش بازتولید کنید.
+                (matchInfo + market + probability + issuedAt) را با همین هش بازتولید کنید.
               </p>
               <div className="num break-all rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5 text-left text-[10px] text-emerald-300" dir="ltr">
                 {verify.shaHash}
               </div>
               <div className="text-[10px] text-slate-400">
-                مارکت: <span dir="ltr">{officialBetLine(verify.marketKey, verify.selection, verify.marketLabel, verify.homeName, verify.awayName)}</span> · ضریب{" "}
-                <span className="num" dir="ltr">{fmtPrice(verify.price)}</span> · استیک{" "}
-                <span className="num" dir="ltr">{fmtUnits(verify.stake, 0)}u</span>
+                مارکت: <span dir="ltr">{officialBetLine(verify.marketKey, verify.selection, verify.marketLabel, verify.homeName, verify.awayName)}</span>
+                {" "}· احتمال کالیبره{" "}
+                <span className="num" dir="ltr">
+                  {Number.isFinite((verify.noLossProb ?? verify.modelProb) * 100)
+                    ? `${((verify.noLossProb ?? verify.modelProb) * 100).toFixed(1)}%`
+                    : "—"}
+                </span>
               </div>
               <div className="text-[10px] text-slate-400">
                 زمان قفل پیش‌ازبازی: <span className="num text-violet-300" dir="ltr">{formatSafeDateTime(verify.lockedAt)}</span> · زمان تسویه:{" "}

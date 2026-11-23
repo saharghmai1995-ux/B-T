@@ -10,7 +10,7 @@ import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
 import {
-  seedRealHistory, runTennisSeedBackground, TENNIS_SEEDED_KEY, type HistorySeedSummary,
+  seedRealHistory, runTennisSeedBackground, HISTORY_SEEDED_KEY, TENNIS_SEEDED_KEY, type HistorySeedSummary,
 } from "./real-history-backfill";
 import { backfillShadowVetoes } from "./rca-veto";
 import { getSettings, getSetting, setSetting, maskSettings, SETTING_KEYS, getOddsPapiApiKey } from "./settings";
@@ -455,6 +455,18 @@ export async function ensureBootstrapState(): Promise<AppState> {
   } catch (err) {
     console.error("tennis EV migration failed", err);
   }
+  // v3.2 — ONE-TIME Pure Hit-Rate ledger migration: purge the settled ledger
+  // + shadow rows, then re-seed in the BACKGROUND under the v3.2 rules
+  // (14-day football window, independent 30/30 quotas, tennis market
+  // diversity, Elo-1500 rejection, REAL Shadow Ledger verdicts).
+  try {
+    const v32 = await runV32LedgerMigration();
+    if (!v32.skipped) {
+      console.log(`[v3.2] ledger migration: ${v32.purgedSignals} settled rows + ${v32.purgedVetoes} vetoes purged — background reseed fired`);
+    }
+  } catch (err) {
+    console.error("v3.2 ledger migration failed (contained)", err);
+  }
   // v2.7.2 hotfix — 30-day tennis backfill runs NON-BLOCKING (background,
   // single-flight): the ESPN range fetch + hundreds of upserts used to run
   // synchronously here and held every /api/bootstrap response for ~12s,
@@ -561,3 +573,90 @@ export async function runTennisEvMigration(opts?: { force?: boolean }): Promise<
 }
 
 export { tehranDayKey };
+
+export interface V32LedgerMigrationSummary {
+  skipped: boolean;
+  purgedSignals: number;
+  purgedVetoes: number;
+  ranAt: string;
+}
+
+const V32_MIGRATION_KEY = "v32LedgerMigrationAt";
+
+/**
+ * v3.2 single-flight background reseed — runs seedRealHistory({force:true})
+ * with the NEW v3.2 rules (14-day football window, independent 30/30 quotas,
+ * tennis market diversity, Elo-1500 rejection, REAL Shadow Ledger verdicts)
+ * WITHOUT ever blocking a request path (the v2.7.2 lesson).
+ */
+let v32SeedInFlight: Promise<HistorySeedSummary> | null = null;
+
+export function runV32SeedBackground(): Promise<HistorySeedSummary> {
+  if (!v32SeedInFlight) {
+    v32SeedInFlight = seedRealHistory({ force: true })
+      .then((summary) => {
+        console.log(
+          `[v3.2] ledger reseed: ${summary.signalsSeeded} seeded (W${summary.won}/L${summary.lost}/V${summary.void}) ` +
+          `· ${summary.vetoes} shadow vetoes from ${summary.fixturesFetched} REAL fixtures`,
+        );
+        return summary;
+      })
+      .catch((err) => {
+        console.error("v3.2 ledger reseed failed (background, non-fatal)", err);
+        return {
+          skipped: false, fixturesFetched: 0, matchesUpserted: 0, signalsSeeded: 0,
+          won: 0, lost: 0, void: 0, accas: 0, vetoes: 0, posters: 0,
+          notes: [`background run failed: ${(err as Error).message}`],
+          seededAt: new Date().toISOString(),
+        } satisfies HistorySeedSummary;
+      })
+      .finally(() => { v32SeedInFlight = null; });
+  }
+  return v32SeedInFlight;
+}
+
+/**
+ * v3.2 §1/§3 — ONE-TIME ledger migration: purge every settled ledger row,
+ * shadow veto and poster (OPEN live signals are NEVER touched), clear both
+ * seed flags and fire the v3.2 reseed in the BACKGROUND. The migration flag
+ * is stamped IMMEDIATELY so the destructive purge can never re-run (the
+ * v2.7.2 repeated-purge-loop bug stays dead).
+ */
+export async function runV32LedgerMigration(opts?: { force?: boolean }): Promise<V32LedgerMigrationSummary> {
+  const ranAt = new Date().toISOString();
+  const done = await getSetting(V32_MIGRATION_KEY);
+  if (done && !opts?.force) {
+    return { skipped: true, purgedSignals: 0, purgedVetoes: 0, ranAt };
+  }
+  let purgedSignals = 0;
+  let purgedVetoes = 0;
+  try {
+    const s = await db.signal.deleteMany({ where: { status: { not: "OPEN" } } });
+    purgedSignals = s.count;
+  } catch (err) {
+    console.error("v3.2 settled-signal purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const v = await db.shadowVeto.deleteMany({});
+    purgedVetoes = v.count;
+  } catch (err) {
+    console.error("v3.2 shadow-veto purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    await db.posterLog.deleteMany({});
+  } catch (err) {
+    console.error("v3.2 poster purge failed (non-fatal)", err);
+  }
+  // Stamp BOTH seed flags BEFORE firing the background reseed: the blocking
+  // cold-start path (settledCount === 0 → await seedRealHistory) must see the
+  // flags and skip instantly, while the background run re-seeds everything.
+  try {
+    await setSetting(HISTORY_SEEDED_KEY, ranAt);
+    await setSetting(TENNIS_SEEDED_KEY, ranAt);
+  } catch (err) {
+    console.error("v3.2 seed-flag stamping failed", err);
+  }
+  await setSetting(V32_MIGRATION_KEY, ranAt);
+  void runV32SeedBackground();
+  return { skipped: false, purgedSignals, purgedVetoes, ranAt };
+}

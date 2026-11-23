@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * View 3 — QuantLabView: the SuperAgent Calibration Lab (v3.1).
+ * View 3 — QuantLabView: the SuperAgent Calibration Lab (v3.1 → v3.2).
  * 4 sub-tabs: کالیبراسیون (default) | زمین فوتبال 3D | زمین تنیس 3D | کنسول QQL.
  * Tabs are pure client state — the page never resets them.
  *
@@ -9,17 +9,29 @@
  * local LabErrorBoundary so a render crash inside a 3D module can NEVER
  * reset the whole page — the boundary shows a glass "حالت امن" panel with a
  * retry button that remounts the child via a React key bump.
+ *
+ * v3.2 hardening: EVERY subtab (کالیبراسیون، زمین‌های 3D و کنسول QQL) is
+ * additionally caged by SubtabErrorBoundary — a crash inside any single
+ * subtab renders a compact glass card («خطا در زیرتب … — موتور اصلی
+ * کالیبراسیون دست‌نخورده است») and the app never falls back to Overview.
+ *
+ * v3.2 data purge: the QQL console no longer talks to /api/qql (its rows
+ * carried price / EV / stake / pnl). Rows are built HERE from
+ * state.settledSignals with the pure hit-rate schema (calibrated probability,
+ * tier, outcome WON/PUSH/LOST, Brier error, Persian RCA root cause) via
+ * buildQqlRows() and handed to the console as props.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { FlaskConical } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Pitch3D } from "./lab/Pitch3D";
 import { Court3D } from "./lab/Court3D";
-import { QqlConsole } from "./lab/QqlConsole";
+import { QqlConsole, buildQqlRows } from "./lab/QqlConsole";
 import { CalibrationLab } from "./lab/CalibrationLab";
 import { LabErrorBoundary } from "./lab/LabErrorBoundary";
+import { SubtabErrorBoundary } from "./lab/SubtabErrorBoundary";
 import type { AppStatePayload } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -107,6 +119,9 @@ export default function QuantLabView({ state }: { state: AppStatePayload }) {
   const [tab, setTab] = useState<TabKey>("calibration");
   const current = TABS.find((t) => t.key === tab) ?? TABS[0];
 
+  /** v3.2 — pure hit-rate QQL rows, mapped client-side from the settled ledger. */
+  const qqlRows = useMemo(() => buildQqlRows(state.settledSignals), [state.settledSignals]);
+
   return (
     <div className="space-y-4" data-testid="lab-view">
       <Card className="glass p-2">
@@ -134,21 +149,33 @@ export default function QuantLabView({ state }: { state: AppStatePayload }) {
 
       {tab !== "calibration" && <TennisFeedStatus state={state} />}
 
-      {tab === "calibration" && <CalibrationLab state={state} />}
+      {tab === "calibration" && (
+        <SubtabErrorBoundary subtab="آزمایشگاه کالیبراسیون">
+          <CalibrationLab state={state} />
+        </SubtabErrorBoundary>
+      )}
 
       {tab === "pitch" && (
-        <LabErrorBoundary label="زمین فوتبال 3D" testId="pitch-boundary">
-          <Pitch3D matches={state.matches} />
-        </LabErrorBoundary>
+        <SubtabErrorBoundary subtab="زمین فوتبال 3D">
+          <LabErrorBoundary label="زمین فوتبال 3D" testId="pitch-boundary">
+            <Pitch3D matches={state.matches} />
+          </LabErrorBoundary>
+        </SubtabErrorBoundary>
       )}
 
       {tab === "court" && (
-        <LabErrorBoundary label="زمین تنیس Hawk-Eye 3D" testId="court-boundary">
-          <Court3D matches={state.matches} />
-        </LabErrorBoundary>
+        <SubtabErrorBoundary subtab="زمین تنیس Hawk-Eye 3D">
+          <LabErrorBoundary label="زمین تنیس Hawk-Eye 3D" testId="court-boundary">
+            <Court3D matches={state.matches} />
+          </LabErrorBoundary>
+        </SubtabErrorBoundary>
       )}
 
-      {tab === "qql" && <QqlConsole />}
+      {tab === "qql" && (
+        <SubtabErrorBoundary subtab="کنسول QQL & AI RCA">
+          <QqlConsole rows={qqlRows} />
+        </SubtabErrorBoundary>
+      )}
     </div>
   );
 }

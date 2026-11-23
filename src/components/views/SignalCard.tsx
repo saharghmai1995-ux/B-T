@@ -1,45 +1,39 @@
 "use client";
 
 /**
- * SignalCard — v3.1 SuperAgent ensemble (owner + members only): every card is
- * FULLY OPEN. No paywall, no lock, no blur — all model math, official bet
- * lines, odds provenance AND the four transparent v3.1 ensemble indicators
- * are visible to every member.
+ * SignalCard — v3.2 Pure Hit-Rate edition (owner + members only): every card is
+ * FULLY OPEN. No paywall, no lock, no blur.
+ *
+ * v3.2 Zero-Bankroll Purge: the +EV badge, stake/Kelly/Flat chip, expected-net
+ * chip, bet-slip button, provenance banner and the price chip are GONE.
+ * The card is a pure hit-rate brief:
  *
  * Structure per card:
  *  1) Header: team avatars (FULL names, no clipping) + match info + rank badge
- *     + league/surface/venue + kickoff (dir="ltr" mono date)
- *  2) v3.1 indicator row (one compact flex-wrap line, 390px-safe):
- *     No-Loss % / Shield type / Tier / Agent Consensus (+ subtle
- *     SHARP PRIOR provenance badge + red-dot sharp divergence alert)
+ *     + league/surface/venue + kickoff (dir="ltr" mono date) + production line
+ *  2) v3.2 hit-rate indicator row (one compact flex-wrap line, 390px-safe):
+ *     Win % (emerald) / No-Loss % (cyan) / Shield type / Tier / SuperAgent
+ *     consensus «Quant/Coach» (+ «+Market» when a sharp source is present)
+ *     + subtle red-dot sharp divergence alert
  *  3) Official English bet line (neon violet capsule, break-words, no ◆) +
- *     Persian explanation
+ *     Persian explanation — wording driven by the 1xBet | BetForward switch
  *  4) ACCA cards render their legs list under the market box
- *  5) Model vs Market implied probability split bar + EV badge — SINGLE_EV
- *     keeps the +EV Edge badge; SHIELD lines show the HONEST model-vs-market
- *     value (may be negative — displayed neutrally, never hidden)
- *  6) Numbers row: price / stake / expected net profit / settlement rule
- *  7) Footer: honest SourceBadge + SHA chip + espn.com link + betslip add
+ *  5) Settlement rule line
+ *  6) Footer: SHA chip + espn.com link
  */
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   HashChip,
-  NoLossChip,
-  PriceTag,
   ShieldBadge,
-  SourceBadge,
   TeamAvatar,
   TierBadge,
 } from "@/components/shared/primitives";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useAppStore } from "@/lib/store";
 import { officialBetLine, marketFa, settlementRule } from "@/lib/markets";
-import { fmtPrice, fmtUnits, fmtDateTimeFa, lineLabel } from "@/lib/api-types";
-import { formatOfficialBookmakerMarket } from "@/core/bookmakers/market-aliases";
+import { fmtPrice, fmtDateTimeFa, lineLabel } from "@/lib/api-types";
 import type { AppSignal } from "@/lib/api-types";
-import { ExternalLink, Layers3, Plus } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Tennis surface chip — Hard/Clay/Grass → Persian label + neon tone. */
@@ -49,25 +43,18 @@ const SURFACE_CHIP: Record<string, { label: string; className: string }> = {
   Grass: { label: "چمن", className: "border-neon-emerald bg-emerald-500/10 text-emerald-300" },
 };
 
-/** Safe 0–100 width percent for the split bar segments. */
-const pct = (p: number): number =>
-  Number.isFinite(p) ? Math.min(100, Math.max(0, p * 100)) : 0;
+/** Bookmaker naming mode driven by the Signals-Hub switch (v3.2):
+ *  "1xbet" → officialBetLine wording; "betforward" → the stored BetForward label. */
+export type CardNaming = "1xbet" | "betforward";
 
-/** Safe "x.x" percent label — never renders NaN. */
-const pctStr = (p: number): string =>
-  Number.isFinite(p) ? (p * 100).toFixed(1) : "—";
-
-/** Bookmaker display mode driven by the Signal-Center switch (hotfix §1). */
-export type CardBookMode = "ALL" | "1XBET" | "BETFORWARD";
-
-/** v3.1 — tiny dash fallback so every indicator slot stays visible. */
+/** v3.2 — tiny dash fallback so every indicator slot stays visible. */
 const DashVal = () => (
   <span className="num text-slate-500" dir="ltr" aria-hidden>
     —
   </span>
 );
 
-/** v3.1 — compact ensemble-indicator chip: muted Persian label + mono value. */
+/** v3.2 — compact hit-rate chip: muted Persian label + mono value. */
 function IndChip({
   label,
   title,
@@ -88,34 +75,25 @@ function IndChip({
   );
 }
 
-export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?: number; bookMode?: CardBookMode }) {
-  const addToBetslip = useAppStore((st) => st.addToBetslip);
-  const isAcca = s.line === "ACCA2";
-  const isShieldLine = s.line === "SHIELD";
+/** Safe "xx.x%" string from a 0–1 probability — null when missing/invalid. */
+const probPct = (p: number | null | undefined): string | null =>
+  p != null && Number.isFinite(p) ? `${(p * 100).toFixed(1)}%` : null;
 
-  // 3) Official bet line — v2.7.1 + v3.1: the FULL official bookmaker market
-  // name plus the REAL team/player name (no ◆ symbol, no truncation). The
-  // switch on top of the Signal Center flips the card text between the 1xBet
-  // wording and the BetForward wording.
-  const clean = formatOfficialBookmakerMarket(s.marketKey, s.selection, s.homeName || "Home", s.awayName || "Away");
+export function SignalCard({ s, rank, naming = "1xbet" }: { s: AppSignal; rank?: number; naming?: CardNaming }) {
+  // 3) Official bet line — v3.2: the hub's «1xBet | BetForward» switch picks
+  // the wording. 1xBet mode = full official bookmaker market name + REAL
+  // team/player name; BetForward mode = the stored clean label.
   const officialLine =
-    bookMode === "1XBET" ? clean.onexbet
-      : bookMode === "BETFORWARD" ? clean.betforward
-        : officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName);
+    naming === "1xbet"
+      ? officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)
+      : s.marketLabel;
   const dashIdx = officialLine.indexOf(" — ");
   const marketPart = dashIdx >= 0 ? officialLine.slice(0, dashIdx) : officialLine;
   const selectionPart = dashIdx >= 0 ? officialLine.slice(dashIdx + 3) : null;
 
-  // 6) Expected net profit = stake × price × modelProb − stake (guarded).
-  const expNet = s.stake * s.price * s.modelProb - s.stake;
-  const expNetStr = Number.isFinite(expNet)
-    ? `${expNet >= 0 ? "+" : ""}${expNet.toFixed(1)}u`
-    : "—";
-
   const surface = s.sport === "tennis" && s.surface ? SURFACE_CHIP[s.surface] : undefined;
-  const modelPct = pct(s.modelProb);
-  const truePct = pct(s.trueProb);
-  const evSafe = Number.isFinite(s.evPct) ? s.evPct : 0;
+  const winPct = probPct(s.modelProb);
+  const noLossPct = probPct(s.noLossProb);
 
   return (
     <div className="glass glass-hover tilt-3d p-4">
@@ -159,11 +137,23 @@ export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?:
         </div>
       </div>
 
-      {/* ── 2) v3.1 ensemble indicators — one compact row, mobile-safe ────── */}
+      {/* ── 2) v3.2 Pure Hit-Rate indicators — one compact row, mobile-safe ─ */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <IndChip label="بدون‌باخت" title="No-Loss Probability = Win + Push">
-          {s.noLossProb != null && Number.isFinite(s.noLossProb) ? (
-            <NoLossChip value={s.noLossProb} className="text-[11px]" />
+        <IndChip label="برد" title="Win Rate — احتمال کالیبره‌شده برد مدل">
+          {winPct ? (
+            <span className="num font-black text-emerald-300" dir="ltr">
+              {winPct}
+            </span>
+          ) : (
+            <DashVal />
+          )}
+        </IndChip>
+
+        <IndChip label="بدون‌باخت" title="No-Loss Rate = برد + پوش">
+          {noLossPct ? (
+            <span className="num font-black text-cyan-300" dir="ltr">
+              {noLossPct}
+            </span>
           ) : (
             <DashVal />
           )}
@@ -185,25 +175,22 @@ export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?:
           </IndChip>
         )}
 
-        <IndChip label="اجماع" title="Agent Consensus — توافق نمایندگان کوانت / مربی / شارپ">
+        <IndChip label="اجماع سوپرایجنت" title="اجماع سوپرایجنت — ترکیب نمایندگان کوانت / مربی (+بازار شارپ در صورت ورود)">
           {s.consensusPct != null && Number.isFinite(s.consensusPct) ? (
-            <span className="num font-black text-violet-300" dir="ltr">
-              {Math.round(s.consensusPct)}% MATCH
-            </span>
+            <>
+              <span className="num font-black text-violet-300" dir="ltr">
+                Quant/Coach {Math.round(s.consensusPct)}%
+              </span>
+              {s.sharpSource && (
+                <span className="num text-[9px] font-bold text-cyan-300/80" dir="ltr">
+                  +Market
+                </span>
+              )}
+            </>
           ) : (
             <DashVal />
           )}
         </IndChip>
-
-        {s.sharpSource ? (
-          <span
-            dir="ltr"
-            className="num inline-flex items-center rounded-md border border-cyan-500/25 bg-cyan-500/5 px-2 py-1 text-[9px] font-bold tracking-wider text-cyan-300/80"
-            title="پیشِ‌شارپ: احتمال بازار از حسگر شارپ تزریق شده است"
-          >
-            SHARP PRIOR: {s.sharpSource}
-          </span>
-        ) : null}
 
         {s.sharpAlert === true && (
           <Tooltip>
@@ -231,7 +218,7 @@ export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?:
             Official Bet Line
           </span>
           <span className="text-[9px] text-violet-300/70">
-            {bookMode === "1XBET" ? "1xBet (official)" : bookMode === "BETFORWARD" ? "BetForward (official)" : "1xBet / BetForward"}
+            {naming === "1xbet" ? "1xBet (official)" : "BetForward (official)"}
           </span>
         </div>
         <div dir="ltr" className="mt-1.5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center">
@@ -253,7 +240,7 @@ export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?:
       </div>
 
       {/* ── 4) ACCA legs list (under the market box) ──────────────────────── */}
-      {isAcca && s.legs && s.legs.length > 0 && (
+      {s.line === "ACCA2" && s.legs && s.legs.length > 0 && (
         <ul className="mt-2 space-y-1 rounded-xl border border-amber-400/25 bg-amber-400/5 p-2">
           {s.legs.map((l, i) => (
             <li key={i} className="flex items-start justify-between gap-2 text-[10px]">
@@ -264,111 +251,27 @@ export function SignalCard({ s, rank, bookMode = "ALL" }: { s: AppSignal; rank?:
         </ul>
       )}
 
-      {/* ── 5) Model vs Market implied probability bar + honest EV badge ──── */}
-      <div className="mt-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[10px] font-semibold text-slate-400">مدل در برابر بازار</span>
-          {isShieldLine ? (
-            <Badge
-              variant="outline"
-              dir="ltr"
-              title="EV صادقانه: بازده انتظاری مدل در برابر قیمت واقعی بازار — روی خط سپر ممکن است منفی باشد و پنهان نمی‌شود"
-              className={cn(
-                "num border text-[10px] font-bold",
-                evSafe >= 0
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                  : "border-slate-600 bg-secondary/60 text-slate-300",
-              )}
-            >
-              EV {evSafe >= 0 ? "+" : ""}
-              {evSafe.toFixed(1)}%
-            </Badge>
-          ) : evSafe > 0 ? (
-            <Badge variant="outline" className="num border-neon-emerald bg-emerald-500/10 text-[10px] text-emerald-300">
-              +EV Edge +{evSafe.toFixed(1)}% EV
-            </Badge>
-          ) : null}
-        </div>
-        <div
-          dir="ltr"
-          className="mt-1.5 flex h-7 w-full overflow-hidden rounded-lg border border-slate-800 bg-slate-900/70"
-        >
-          <div
-            style={{ width: `${modelPct}%` }}
-            className="flex items-center justify-center bg-gradient-to-r from-cyan-500/45 to-cyan-400/20"
-          >
-            <span className="num truncate px-1 text-[9px] font-bold text-cyan-100">
-              Model Prob {pctStr(s.modelProb)}%
-            </span>
-          </div>
-          <div
-            style={{ width: `${truePct}%` }}
-            className="flex items-center justify-center bg-slate-600/50"
-          >
-            <span className="num truncate px-1 text-[9px] font-bold text-slate-300">
-              Market Implied {pctStr(s.trueProb)}%
-            </span>
-          </div>
-        </div>
+      {/* ── 5) Settlement rule ────────────────────────────────────────────── */}
+      <div className="mt-3 w-full rounded-md border border-slate-800/80 bg-secondary/30 px-2 py-1 text-[10px] text-muted-foreground">
+        ⚖️ {settlementRule(s.sport, s.marketKey)}
       </div>
 
-      {/* ── 6) Numbers row: price / stake / expected net / settlement rule ── */}
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <PriceTag price={s.price} />
-        <span className="num rounded-lg border border-slate-700 bg-secondary/60 px-2 py-1 text-[11px] text-slate-300">
-          {fmtUnits(s.stake, 0)}u {s.stakeMode === "KELLY_025" ? "Kelly 0.25×" : "Flat 100u"}
-        </span>
-        <span className="num rounded-lg border border-neon-emerald bg-emerald-500/10 px-2 py-1 text-[11px] font-bold text-emerald-300">
-          سود خالص انتظاری {expNetStr}
-        </span>
-        <span className="w-full rounded-md border border-slate-800/80 bg-secondary/30 px-2 py-1 text-[10px] text-muted-foreground">
-          ⚖️ {settlementRule(s.sport, s.marketKey)}
-        </span>
-      </div>
-
-      {/* ── 7) Footer: provenance + hash + espn link + betslip add ────────── */}
+      {/* ── 6) Footer: hash + espn link ───────────────────────────────────── */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <SourceBadge source={s.line === "ARB" ? "LIVE" : "ESTIMATE"} />
-        <div className="flex items-center gap-1.5">
-          <HashChip hash={s.shaHash} />
-          {s.espnUrl ? (
-            <a
-              href={s.espnUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-[10px] text-slate-400 transition-colors hover:border-cyan-500/50 hover:text-cyan-300"
-              title="مشاهده در ESPN"
-            >
-              espn.com
-              <ExternalLink className="size-3" />
-            </a>
-          ) : null}
-        </div>
+        <HashChip hash={s.shaHash} />
+        {s.espnUrl ? (
+          <a
+            href={s.espnUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-[10px] text-slate-400 transition-colors hover:border-cyan-500/50 hover:text-cyan-300"
+            title="مشاهده در ESPN"
+          >
+            espn.com
+            <ExternalLink className="size-3" />
+          </a>
+        ) : null}
       </div>
-      <Button
-        variant="outline"
-        className="mt-3 w-full gap-2 border-cyan-500/40 bg-cyan-500/5 text-xs font-bold text-cyan-300 hover:bg-cyan-500/15 hover:text-cyan-200"
-        onClick={() =>
-          addToBetslip({
-            signalId: s.id,
-            matchInfo: s.matchInfo,
-            league: s.league,
-            sport: s.sport,
-            marketKey: s.marketKey,
-            marketLabel: officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName),
-            selection: s.selection,
-            price: s.price,
-            modelProb: s.modelProb,
-            evPct: s.evPct,
-            stake: s.stake,
-            stakeMode: s.stakeMode,
-            shaHash: s.shaHash,
-          })
-        }
-      >
-        {isAcca ? <Layers3 className="size-4" /> : <Plus className="size-4" />}
-        افزودن به برگه شرط‌بندی
-      </Button>
     </div>
   );
 }

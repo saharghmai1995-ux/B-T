@@ -1,26 +1,32 @@
 "use client";
 
 /**
- * View 1 — OverviewView: v3.1 "Parallel Superagent" executive dashboard.
+ * View 1 — OverviewView: v3.2 "Zero-Bankroll Purge" executive dashboard.
  *
- * Modules (v3.1 rebuild):
- *  1) HeroQuantum3D — R3F quantum superagent core, wrapped in ErrorBoundary3D
+ * Modules (v3.2 rebuild):
+ *  1) QuantumTelemetryCore — WebGL-free SVG live telemetry core (replaces the
+ *     Three.js HeroQuantum3D which crashed on browsers without WebGL)
  *  2) 4 SuperAgent KPI cards — Pure Win Rate / No-Loss Shield Rate /
  *     Calibration (Brier+ECE) / Win Streak + Shadow Lift
  *  3) Sport split panel — Football / Tennis WON · VOID(=PUSH) · LOST + rates
  *  4) Pick of the Day (سیگنال طلایی) — STRICTLY TODAY (Asia/Tehran),
- *     SHIELD-line preferred, best by (noLossProb ?? modelProb)
- *  5) Equity curve + daily PnL Recharts (kept from v2.x)
- *  6) Interactive recent settlements — expandable SuperAgent consensus audit
+ *     SHIELD-line preferred, best by (noLossProb ?? modelProb) — price/EV/
+ *     stake chips purged in v3.2
+ *  5) Pure Hit-Rate charts — cumulative Win-Rate/No-Loss-Rate trend + daily
+ *     WON/PUSH/LOST counts (equity curve + daily PnL removed in v3.2)
+ *  6) 48+ record list — settlement badge, calibrated probability, shield type,
+ *     market line, FT result, date (signed-unit column removed in v3.2)
  *
  * Zero UI math beyond presentation fallbacks: every headline number comes from
  * the server payload; `agentLab` is optional and every field is guarded.
+ * v3.2: every unit-based financial artifact (bankroll u, ROI%, EV%, Kelly/Flat
+ * stake, equity curve, PnL) is GONE from this view.
  */
 
 import { useMemo, useState } from "react";
 import {
-  AreaChart,
-  Area,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -28,15 +34,12 @@ import {
   CartesianGrid,
   BarChart,
   Bar,
-  ReferenceLine,
 } from "recharts";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   AnimatedNumber,
   TeamAvatar,
-  PriceTag,
   HashChip,
   EmptyState,
   TierBadge,
@@ -45,12 +48,11 @@ import {
   SportIcon,
 } from "@/components/shared/primitives";
 import { useAppStore } from "@/lib/store";
-import { fmtUnits, fmtDateTimeFa, lineLabel, statusColor } from "@/lib/api-types";
+import { fmtDateTimeFa, lineLabel } from "@/lib/api-types";
+import type { AppStatePayload } from "@/lib/api-types";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import { cn } from "@/lib/utils";
-import ErrorBoundary3D from "@/components/three/ErrorBoundary3D";
-import HeroQuantum3D from "@/components/three/HeroQuantum3D";
-import type { AppStatePayload } from "@/lib/api-types";
+import QuantumTelemetryCore from "@/components/QuantumTelemetryCore";
 import {
   Target,
   ShieldCheck,
@@ -66,14 +68,6 @@ import {
 
 /* ============================== shared helpers ============================== */
 
-type RangeKey = "7" | "30" | "all";
-
-const RANGES: Array<{ key: RangeKey; label: string }> = [
-  { key: "7", label: "۷ روز" },
-  { key: "30", label: "۳۰ روز" },
-  { key: "all", label: "کل" },
-];
-
 interface SportStat {
   wins: number;
   losses: number;
@@ -85,9 +79,6 @@ interface SportStat {
 const ZERO_STAT: SportStat = { wins: 0, losses: 0, profit: 0, winRate: 0, settled: 0 };
 
 const statOf = (rec: Record<string, SportStat>, key: string): SportStat => rec[key] ?? ZERO_STAT;
-
-/** Signed unit string: +12.5 / -3.0 (fmtUnits keeps the minus). */
-const signed = (n: number, d = 1): string => `${n >= 0 ? "+" : ""}${fmtUnits(n, d)}`;
 
 /**
  * v3.1 — Tehran day-key, reimplemented inline (client-safe, no server imports):
@@ -109,14 +100,6 @@ function tehranDayKey(input: string | number | Date | null | undefined): string 
   } catch {
     return null;
   }
-}
-
-function filterSeries<T extends { date: string }>(rows: T[], range: RangeKey): T[] {
-  if (range === "all" || rows.length === 0) return rows;
-  const days = Number(range);
-  const cutoff = Date.now() - days * 86400_000;
-  const filtered = rows.filter((p) => new Date(p.date).getTime() >= cutoff);
-  return filtered.length > 0 ? filtered : rows.slice(-days);
 }
 
 /* ============================== v3.1 KPI card ============================== */
@@ -259,7 +242,6 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
   const lab = state.agentLab;
   const setView = useAppStore((s) => s.setView);
   const setSportFilter = useAppStore((s) => s.setSportFilter);
-  const [range, setRange] = useState<RangeKey>("30");
   // v3.1 — interactive settlement rows: clicking reveals the SuperAgent
   // consensus audit panel (Quant + Coach views, sharp sensor, FT, SHA-256).
   const [expandedSettlements, setExpandedSettlements] = useState<Set<string>>(new Set());
@@ -276,8 +258,62 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
       ? ((m.wins + m.voids) / settledAll) * 100
       : m.winRate;
 
-  const curve = useMemo(() => filterSeries(m.equityCurve, range), [m.equityCurve, range]);
-  const pnl = useMemo(() => filterSeries(m.dailyPnl, range), [m.dailyPnl, range]);
+  // v3.2 telemetry fallback: 0 when nothing settled (spec formula)
+  const telemetryNoLossRate = lab
+    ? lab.noLossRate * 100
+    : settledAll > 0
+      ? ((m.wins + m.voids) / settledAll) * 100
+      : 0;
+
+  /* ---- v3.2 Pure hit-rate chart series (equity curve & PnL removed) ---- */
+  const settledSorted = useMemo(() => {
+    return [...state.settledSignals]
+      .filter((s) => s.settledAt != null)
+      .sort(
+        (a, b) =>
+          new Date(a.settledAt ?? "").getTime() - new Date(b.settledAt ?? "").getTime(),
+      );
+  }, [state.settledSignals]);
+
+  // a) Cumulative Win-Rate / No-Loss-Rate points (WON vs decided, +PUSH for no-loss)
+  // Pure reduce (react-hooks/immutability-safe): every step derives the next
+  // accumulator instead of reassigning outer render variables.
+  const hitRateSeries = useMemo(() => {
+    const points: Array<{ date: string; winRate: number; noLossRate: number }> = [];
+    settledSorted.reduce<{ wins: number; lost: number; voids: number }>(
+      (acc, s) => {
+        const wins = acc.wins + (s.status === "WON" ? 1 : 0);
+        const lost = acc.lost + (s.status === "LOST" ? 1 : 0);
+        const voids = acc.voids + (s.status !== "WON" && s.status !== "LOST" ? 1 : 0);
+        const decided = wins + lost;
+        const settled = decided + voids;
+        points.push({
+          date: (s.settledAt ?? "").slice(0, 10),
+          winRate: decided > 0 ? (wins / decided) * 100 : 0,
+          noLossRate: settled > 0 ? ((wins + voids) / settled) * 100 : 0,
+        });
+        return { wins, lost, voids };
+      },
+      { wins: 0, lost: 0, voids: 0 },
+    );
+    return points;
+  }, [settledSorted]);
+
+  // b) Daily WON / PUSH(VOID) / LOST counts grouped by dayKey
+  const statusByDay = useMemo(() => {
+    const byDay = new Map<string, { date: string; won: number; push: number; lost: number }>();
+    for (const s of settledSorted) {
+      const key = s.dayKey || (s.settledAt ?? "").slice(0, 10);
+      const entry = byDay.get(key) ?? { date: key, won: 0, push: 0, lost: 0 };
+      if (s.status === "WON") entry.won += 1;
+      else if (s.status === "LOST") entry.lost += 1;
+      else entry.push += 1;
+      byDay.set(key, entry);
+    }
+    return [...byDay.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([, v]) => v);
+  }, [settledSorted]);
 
   /* ---- Pick of the Day: STRICTLY today in Asia/Tehran (inline day-key) ---- */
   const pick = useMemo(() => {
@@ -296,20 +332,43 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
     })[0];
   }, [state.openSignals]);
 
-  const recent = state.settledSignals.slice(0, 8);
+  // v3.2 — 48+ record list (was: 8 recent rows)
+  const recent = state.settledSignals.slice(0, 48);
 
   const openPickSport = (sport: string) => {
     setSportFilter(sport === "tennis" ? "tennis" : "football");
     setView("signals");
   };
 
+  // v3.2 — QuantumTelemetryCore navigation (predictions/ledger/calibration)
+  const navigateTelemetry = (tab: "predictions" | "ledger" | "calibration") => {
+    if (tab === "predictions") setView("signals");
+    else if (tab === "ledger") setView("ledger");
+    else setView("lab");
+  };
+
   return (
     <div className="space-y-4" data-testid="overview-view">
-      {/* ============ Module 1 — Quantum SuperAgent 3D hero ============ */}
+      {/* ============ Module 1 — QuantumTelemetryCore (WebGL-free, v3.2) ============ */}
       <section aria-label="موتور سوپرایجنت موازی" className="relative">
-        <ErrorBoundary3D>
-          <HeroQuantum3D />
-        </ErrorBoundary3D>
+        <QuantumTelemetryCore
+          footballScanned={state.matches.filter((mt) => mt.sport === "football").length}
+          tennisScanned={state.matches.filter((mt) => mt.sport === "tennis").length}
+          activeFootballPicks={state.openSignals.filter((s) => s.sport === "football").length}
+          activeTennisPicks={state.openSignals.filter((s) => s.sport === "tennis").length}
+          winRatePct={pureWinRate}
+          noLossRatePct={telemetryNoLossRate}
+          brierScore={lab?.brier ?? 0}
+          ecePct={(lab?.ece ?? 0) * 100}
+          wQuantPct={lab ? lab.weights.wQuant * 100 : 65}
+          wCoachPct={lab ? lab.weights.wCoach * 100 : 35}
+          wMarketPct={lab ? lab.weights.wMarket * 100 : 0}
+          shadowVetoCount={
+            lab ? lab.shadow.savedLossCount + lab.shadow.missedWinCount : state.shadowVetoes.length
+          }
+          shadowLiftPp={lab?.shadow.shadowLiftPct ?? 0}
+          onNavigate={navigateTelemetry}
+        />
       </section>
 
       {/* ============ Module 2 — v3.1 SuperAgent KPI bar (4 cards) ============ */}
@@ -410,7 +469,6 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                 {fmtDateTimeFa(pick.startTime)}
               </span>
               <span className="rounded-md bg-secondary px-1.5 py-0.5">{lineLabel(pick.line)}</span>
-              <NoLossChip value={pick.noLossProb} />
             </div>
 
             <div
@@ -423,25 +481,15 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
             </div>
             <p className="-mt-1 text-center text-[11px] leading-5 text-muted-foreground">{marketFa(pick.marketKey)}</p>
 
+            {/* v3.2 — consensus chip only (PriceTag / +EV badge / stake chip purged) */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <PriceTag price={pick.price} className="px-3 py-1.5 text-lg" />
-                <Badge variant="outline" className="border-neon-emerald bg-emerald-500/10 text-xs font-bold text-emerald-300">
-                  +EV {fmtUnits(pick.evPct, 1)}%
-                </Badge>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-lg border border-violet-400/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
-                  اجماع سوپرایجنت:{" "}
-                  <span className="num font-bold" dir="ltr">
-                    {pick.consensusPct != null ? `${pick.consensusPct}%` : "—"}
-                  </span>
+              <span className="rounded-lg border border-violet-400/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
+                اجماع سوپرایجنت:{" "}
+                <span className="num font-bold" dir="ltr">
+                  {pick.consensusPct != null ? `${pick.consensusPct}%` : "—"}
                 </span>
-                <span className="num rounded-lg border border-slate-700 bg-secondary px-2.5 py-1 text-[11px]">
-                  استیک <span dir="ltr">{fmtUnits(pick.stake, 0)}u</span> ·{" "}
-                  {pick.stakeMode === "KELLY_025" ? "Kelly" : "Flat"}
-                </span>
-              </div>
+              </span>
+              <NoLossChip value={pick.noLossProb} className="text-sm" />
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-2.5">
@@ -468,147 +516,111 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
           >
             <Satellite className="mx-auto size-6 text-slate-500" />
             <p className="mt-2 text-sm font-semibold text-slate-300">
-              امروز مسابقه‌ای برای انتخاب طلایی وجود ندارد
+              امروز سیگنال طلایی فعال نیست
             </p>
             <p className="mx-auto mt-1 max-w-md text-[11px] leading-5 text-muted-foreground">
               کارت طلایی فقط سیگنال‌های امروز تهران را نشان می‌دهد — نزدیک‌ترین
-              سیگنال‌های +EV در مرکز پیش‌بینی در دسترس است.
+              سیگنال‌های فعال در مرکز پیش‌بینی در دسترس است.
             </p>
           </div>
         )}
       </div>
 
-      {/* ============ Module 5 — Equity curve + daily PnL (kept from v2.x) ============ */}
+      {/* ============ Module 5 — Pure Hit-Rate charts (v3.2: equity/PnL purged) ============ */}
       <Card className="glass glass-hover gap-4 p-4" data-testid="overview-charts">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Zap className="size-4 text-cyan-300" />
-            <h2 className="text-sm font-bold">موتور نمودار — منحنی سرمایه و PnL روزانه</h2>
+            <h2 className="text-sm font-bold">موتور نمودار خالص — Pure Hit-Rate</h2>
           </div>
-          <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-secondary/60 p-1">
-            {RANGES.map((r) => (
-              <button
-                key={r.key}
-                type="button"
-                onClick={() => setRange(r.key)}
-                className={cn(
-                  "rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors",
-                  range === r.key
-                    ? "border border-neon-cyan bg-cyan-500/10 text-cyan-300"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <span className="num text-[10px] text-muted-foreground">
+            <span dir="ltr">{state.settledSignals.length}</span> تسویه‌شده در دفتر
+          </span>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          {/* Equity curve — two glowing areas + neon total line */}
+          {/* a) Cumulative Win-Rate + No-Loss-Rate trend (0–100%) */}
           <div className="rounded-xl border border-slate-800/70 bg-secondary/30 p-3">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-bold">منحنی رشد سرمایه (فوتبال / تنیس / کل)</h3>
+              <h3 className="text-xs font-bold">روند تجمعی وین‌ریت و نرخ بدون‌باخت (%)</h3>
               <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                 <span className="flex items-center gap-1">
-                  <span className="size-2 rounded-sm bg-emerald-400" /> بانک فوتبال
+                  <span className="size-2 rounded-sm bg-[#34D399]" /> وین‌ریت
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="size-2 rounded-sm bg-violet-400" /> بانک تنیس
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="size-2 rounded-sm bg-cyan-400" /> کل
+                  <span className="size-2 rounded-sm bg-[#22D3EE]" /> بدون‌باخت
                 </span>
               </div>
             </div>
-            {m.equityCurve.length === 0 ? (
+            {hitRateSeries.length === 0 ? (
               <EmptyState
                 icon="📈"
-                title="منحنی پس از اولین تسویه رسمی ترسیم می‌شود"
-                sub="موتور تسویه پس از پایان هر مسابقه، نقطه جدید را به منحنی اضافه می‌کند."
+                title="روند پس از اولین تسویه رسمی ترسیم می‌شود"
+                sub="پس از هر تسویه، نقطه جدید وین‌ریت و نرخ بدون‌باخت به نمودار اضافه می‌شود."
               />
             ) : (
               <div className="h-56" dir="ltr">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={curve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="eqFoot" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#34D399" stopOpacity={0.45} />
-                        <stop offset="100%" stopColor="#34D399" stopOpacity={0.02} />
-                      </linearGradient>
-                      <linearGradient id="eqTen" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#8B5CF6" stopOpacity={0.45} />
-                        <stop offset="100%" stopColor="#8B5CF6" stopOpacity={0.02} />
-                      </linearGradient>
-                    </defs>
+                  <LineChart data={hitRateSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
                     <XAxis dataKey="date" tick={{ fill: "#8FA3BF", fontSize: 10 }} tickFormatter={(d: string) => String(d).slice(5)} />
-                    <YAxis tick={{ fill: "#8FA3BF", fontSize: 10 }} width={52} domain={["auto", "auto"]} />
+                    <YAxis
+                      tick={{ fill: "#8FA3BF", fontSize: 10 }}
+                      width={44}
+                      domain={[0, 100]}
+                      ticks={[0, 25, 50, 75, 100]}
+                      tickFormatter={(v: number) => `${v}%`}
+                    />
                     <Tooltip
                       contentStyle={{ background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 12 }}
                       labelStyle={{ color: "#8FA3BF" }}
-                      formatter={(v) => `${fmtUnits(Number(v), 1)}u`}
+                      formatter={(v) => `${Number(v).toFixed(1)}%`}
                     />
-                    <Area type="monotone" dataKey="football" name="بانک فوتبال" stroke="#34D399" strokeWidth={1.5} fill="url(#eqFoot)" />
-                    <Area type="monotone" dataKey="tennis" name="بانک تنیس" stroke="#8B5CF6" strokeWidth={1.5} fill="url(#eqTen)" />
-                    <Area
-                      type="monotone"
-                      dataKey="bankroll"
-                      name="کل بانک"
-                      stroke="#00E5FF"
-                      strokeWidth={2.5}
-                      fill="none"
-                      dot={false}
-                      style={{ filter: "drop-shadow(0 0 6px rgba(0,229,255,0.7))" }}
-                    />
-                  </AreaChart>
+                    <Line type="monotone" dataKey="winRate" name="وین‌ریت" stroke="#34D399" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" dataKey="noLossRate" name="بدون‌باخت" stroke="#22D3EE" strokeWidth={2.5} dot={false} />
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
             )}
           </div>
 
-          {/* Daily PnL — emerald/violet bars + red→gold→emerald zero line */}
+          {/* b) Daily WON / PUSH(VOID) / LOST stacked counts */}
           <div className="rounded-xl border border-slate-800/70 bg-secondary/30 p-3">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-bold">سود / زیان روزانه بر حسب ورزش</h3>
+              <h3 className="text-xs font-bold">نتایج روزانه — WON / PUSH / LOST</h3>
               <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                 <span className="flex items-center gap-1">
-                  <span className="size-2 rounded-sm bg-emerald-400" /> فوتبال
+                  <span className="size-2 rounded-sm bg-[#34D399]" /> WON
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="size-2 rounded-sm bg-violet-400" /> تنیس
+                  <span className="size-2 rounded-sm bg-[#06B6D4]" /> PUSH
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="size-2 rounded-sm bg-[#EF4444]" /> LOST
                 </span>
               </div>
             </div>
-            {m.dailyPnl.length === 0 ? (
+            {statusByDay.length === 0 ? (
               <EmptyState
                 icon="📊"
-                title="سود روزانه پس از اولین تسویه ثبت می‌شود"
-                sub="پس از هر تسویه رسمی، PnL آن روز در همین نمودار می‌نشیند."
+                title="نتایج روزانه پس از اولین تسویه ثبت می‌شود"
+                sub="شمارش بردها، پوش‌ها و باخت‌های هر روز — بدون هیچ عدد مالی."
               />
             ) : (
               <div className="h-56" dir="ltr">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={pnl} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="pnlZero" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stopColor="#EF4444" />
-                        <stop offset="50%" stopColor="#F59E0B" />
-                        <stop offset="100%" stopColor="#34D399" />
-                      </linearGradient>
-                    </defs>
+                  <BarChart data={statusByDay} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="date" tick={{ fill: "#8FA3BF", fontSize: 10 }} tickFormatter={(d: string) => String(d).slice(5)} />
-                    <YAxis tick={{ fill: "#8FA3BF", fontSize: 10 }} width={52} />
+                    <YAxis tick={{ fill: "#8FA3BF", fontSize: 10 }} width={36} allowDecimals={false} />
                     <Tooltip
                       contentStyle={{ background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 12 }}
                       labelStyle={{ color: "#8FA3BF" }}
-                      formatter={(v) => `${signed(Number(v))}u`}
                       cursor={{ fill: "rgba(0,229,255,0.06)" }}
                     />
-                    <ReferenceLine y={0} stroke="url(#pnlZero)" strokeWidth={1.5} />
-                    <Bar dataKey="football" name="سود فوتبال" fill="#34D399" radius={[3, 3, 0, 0]} maxBarSize={18} />
-                    <Bar dataKey="tennis" name="سود تنیس" fill="#8B5CF6" radius={[3, 3, 0, 0]} maxBarSize={18} />
+                    <Bar dataKey="won" name="WON" stackId="a" fill="#34D399" maxBarSize={18} />
+                    <Bar dataKey="push" name="PUSH (VOID)" stackId="a" fill="#06B6D4" maxBarSize={18} />
+                    <Bar dataKey="lost" name="LOST" stackId="a" fill="#EF4444" radius={[3, 3, 0, 0]} maxBarSize={18} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -617,12 +629,12 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
         </div>
       </Card>
 
-      {/* ============ Module 6 — Interactive recent settlements (v3.1 audit) ============ */}
+      {/* ============ Module 6 — v3.2 48+ record list (unit profit purged) ============ */}
       <Card className="glass glass-hover gap-3 p-4" data-testid="overview-settlements">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Trophy className="size-4 text-emerald-300" />
-            <h2 className="text-sm font-bold">آخرین تسویه‌های رسمی — ممیزی اجماع</h2>
+            <h2 className="text-sm font-bold">کارنامه ۴۸+ رکورد — برچسب نتیجه، احتمال کالیبره و سپر</h2>
           </div>
           <span className="num text-[10px] text-muted-foreground">
             <span dir="ltr">{state.settledSignals.length}</span> تسویه‌شده در دفتر
@@ -635,7 +647,6 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
         ) : (
           <div className="max-h-[560px] space-y-2 overflow-y-auto scroll-slim" data-testid="overview-settlement-list">
             {recent.map((s) => {
-              const amt = s.netProfit ?? 0;
               const expanded = expandedSettlements.has(s.id);
               const st = settlementStatus(s.status);
               // FT: football "2-1", tennis real set scores ("6-4, 6-3")
@@ -667,19 +678,29 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                     className="flex w-full items-center justify-between gap-3 px-3 py-2 text-right"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-medium" dir="auto">
-                        {s.matchInfo}
+                      <div className="flex items-center gap-1.5">
+                        <SportIcon sport={s.sport} className="shrink-0 text-xs" />
+                        <span className="truncate text-xs font-medium" dir="auto">
+                          {s.matchInfo}
+                        </span>
                       </div>
                       <div className="truncate text-[10px] text-muted-foreground" dir="ltr">
                         {officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <span className="num hidden inline-block text-[9px] tabular-nums text-slate-500 md:inline" dir="ltr">
-                        {fmtDateTimeFa(s.settledAt, false)}
+                      <ShieldBadge shieldType={s.shieldType} />
+                      <span className="num hidden text-[10px] font-bold text-foreground lg:inline" dir="ltr" title="نتیجه نهایی">
+                        FT {ft}
                       </span>
-                      <span className={cn("num text-[11px] font-bold", statusColor(s.status))}>
-                        {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
+                      <span className="hidden items-center gap-1 text-[10px] md:flex">
+                        <span className="text-slate-500">احتمال کالیبره:</span>
+                        <span className="num font-bold text-cyan-300" dir="ltr">
+                          {((s.noLossProb ?? s.modelProb) * 100).toFixed(1)}%
+                        </span>
+                      </span>
+                      <span className="num hidden text-[9px] tabular-nums text-slate-500 xl:inline" dir="ltr">
+                        {fmtDateTimeFa(s.settledAt, false)}
                       </span>
                       <span
                         className={cn(
@@ -751,25 +772,6 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-500">وضعیت</span>
                           <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-bold", st.cls)}>{st.label}</span>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">ضریب ثبت‌شده</span>
-                          <span className="num font-bold text-foreground" dir="ltr">
-                            {s.price.toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">سود / زیان خالص</span>
-                          <span
-                            className={cn(
-                              "num font-bold",
-                              s.status === "VOID" ? "text-slate-300" : amt >= 0 ? "text-emerald-300" : "text-red-300",
-                            )}
-                            dir="ltr"
-                          >
-                            {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
-                          </span>
                         </div>
 
                         {/* Coach tactical note — static descriptive text */}

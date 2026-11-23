@@ -75,6 +75,46 @@ export function Court3D({ matches }: { matches: AppMatch[] }) {
   const st = STATUS_META[match?.status ?? "pre"] ?? STATUS_META.pre;
   const hasScore = (match?.scores.home ?? null) !== null || (match?.scores.away ?? null) !== null;
 
+  // v3.2 §3 — HARD Elo-1500 rejection in Hawk-Eye 3D: a pairing with NO real
+  // ATP/WTA ranking on BOTH sides is an unrated coin-flip (default Elo 1500
+  // vs 1500) and is rejected immediately — the duel panel never runs on
+  // default ratings. The match selector stays reachable via the parent list.
+  if (match && match.homeRank == null && match.awayRank == null) {
+    return (
+      <div
+        className="glass flex flex-col items-center justify-center gap-3 rounded-2xl p-10 text-center"
+        data-testid="court-unrated-rejected"
+      >
+        <div className="mb-1 flex w-full flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-bold">زمین تنیس 3D Hawk-Eye</h3>
+          <Select value={match.id} onValueChange={setMatchId}>
+            <SelectTrigger className="h-8 w-56 text-[11px]">
+              <SelectValue placeholder="انتخاب بازی" />
+            </SelectTrigger>
+            <SelectContent className="max-h-72">
+              {tennis.slice(0, 40).map((m) => (
+                <SelectItem key={m.id} value={m.id} className="text-[11px]">
+                  <span className="whitespace-normal">
+                    {m.homeName} vs {m.awayName} ({m.league})
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="text-4xl" aria-hidden>🚫</div>
+        <p className="text-sm font-bold text-amber-300">
+          جفت بدون رنکینگ واقعی ATP/WTA — رد شده (Elo 1500 vs 1500)
+        </p>
+        <p className="max-w-md text-xs leading-6 text-slate-400">
+          به‌موجب قفل سخت v3.2، هر بازی که هر دو بازیکن آن فاقد رنکینگ واقعی
+          باشند از شبیه‌سازی Hawk-Eye و پنل Elo کنار گذاشته می‌شود — بازی دیگری
+          از فهرست انتخاب بازی را برگزینید.
+        </p>
+      </div>
+    );
+  }
+
   // existing rank→Elo formula, fully optional-chained
   const elo = match
     ? (() => {

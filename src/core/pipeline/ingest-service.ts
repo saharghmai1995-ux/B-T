@@ -41,6 +41,22 @@ export function tehranDayKey(d: Date): string {
 }
 
 async function upsertMatch(m: FeedMatch): Promise<string> {
+  // v3.2 §3 — a REAL finished fixture must NEVER be downgraded by a stale
+  // feed row: ESPN's tennis feed re-carries ended-season events as "pre"
+  // with null scores, which used to wipe the post-state history (status,
+  // REAL scores, set results) that the backfill had written.
+  const existing = await db.match.findUnique({
+    where: { espnEventId: m.espnEventId },
+    select: { id: true, status: true },
+  });
+  if (existing && existing.status === "post" && m.status !== "post") {
+    // Keep the REAL finished state — refresh only cosmetic fields.
+    await db.match.update({
+      where: { id: existing.id },
+      data: { homeLogo: m.homeLogo ?? undefined, awayLogo: m.awayLogo ?? undefined },
+    });
+    return existing.id;
+  }
   const row = await db.match.upsert({
     where: { espnEventId: m.espnEventId },
     create: {
@@ -359,13 +375,41 @@ async function buildAccas(pack: GatheredPack): Promise<number> {
 
 /** Full ingest run — injectable feed for tests. */
 export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestSummary> {
-  const pack = opts?.feed ?? await gatherFeed();
+  const rawPack = opts?.feed ?? await gatherFeed();
+  // v3.2 §3 — stale-feed hygiene: ESPN's tennis feed re-carries ended-season
+  // events (startTime days in the PAST) with state "pre" and no scores. They
+  // can never become real matches — filter them out of the pack and purge
+  // the ones already stored (open signals on them are preserved).
+  const staleCutoff = Date.now() - 48 * 3600_000;
+  const isStale = (m: FeedMatch) =>
+    m.status !== "post" && m.startTime.getTime() < staleCutoff;
+  const staleCount = [...rawPack.football, ...rawPack.tennis].filter(isStale).length;
+  const pack: GatheredPack = {
+    ...rawPack,
+    football: rawPack.football.filter((m) => !isStale(m)),
+    tennis: rawPack.tennis.filter((m) => !isStale(m)),
+  };
   const all = [...pack.football, ...pack.tennis];
 
   // v2.0 ZERO-MOCK legacy purge: any simulated fixture left over from the
   // removed sim-feed era is wiped once (cascade removes its SIM signals too).
   const simPurge = await db.match.deleteMany({ where: { source: "SIM" } });
   const purged = simPurge.count;
+
+  // v3.2 — purge already-stored stale rows (past-dated, never finished, no
+  // OPEN signal attached). Their match rows poison the board and the shield
+  // engine re-vetoes them every tick.
+  try {
+    await db.match.deleteMany({
+      where: {
+        status: { not: "post" },
+        startTime: { lt: new Date(staleCutoff) },
+        signals: { none: { status: "OPEN" } },
+      },
+    });
+  } catch (err) {
+    console.error("stale match purge failed (non-fatal)", err);
+  }
 
   const idByEspn = new Map<string, { id: string; sport: string }>();
   for (const m of all) {
@@ -382,6 +426,7 @@ export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestS
     degraded: pack.degraded, notes: pack.notes, ranAt: new Date().toISOString(),
   };
   if (purged > 0) summary.notes.push(`Legacy SIM rows purged: ${purged}`);
+  if (staleCount > 0) summary.notes.push(`Stale past-dated pre rows dropped: ${staleCount}`);
   await db.ingestState.upsert({
     where: { id: "singleton" },
     create: { id: "singleton", lastRun: new Date(), lastSummary: JSON.stringify(summary) },

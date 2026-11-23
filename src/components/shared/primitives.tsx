@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Shared UI primitives — v2.0 VIP 3D neon glass system.
- * SourceBadge carries the honest odds provenance labels:
- * 🟢 LIVE 1xBet REAL ODDS vs 🟡 MODEL FAIR PRICE (1xBet Margin 5.5%).
+ * Shared UI primitives — v3.2 Pure Hit-Rate neon glass system.
+ * PriceTag is a single neutral mono chip that shows the raw price number;
+ * the v3.1 two-line provenance banner (LIVE/MODEL) is retired.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -179,9 +179,13 @@ export function TeamAvatar({
   );
 }
 
+/** v3.2 — neutral mono price chip: shows the raw price number only (no provenance banner). */
 export function PriceTag({ price, className }: { price: number; className?: string }) {
   return (
-    <span className={cn("num rounded-lg border border-neon-emerald bg-emerald-500/10 px-2.5 py-1 text-sm font-bold text-emerald-300", className)}>
+    <span
+      title="ضریب"
+      className={cn("num rounded-lg border border-slate-700 bg-secondary/60 px-2.5 py-1 text-sm font-bold text-slate-200", className)}
+    >
       {fmtPrice(price)}
     </span>
   );

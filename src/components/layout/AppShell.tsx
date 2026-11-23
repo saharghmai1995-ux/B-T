@@ -17,17 +17,17 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { fmtUnits, fmtClock } from "@/lib/api-types";
+import { fmtClock } from "@/lib/api-types";
 import type { AppStatePayload } from "@/lib/api-types";
+import { AnimatedNumber } from "@/components/shared/primitives";
 import OverviewView from "@/components/views/OverviewView";
 import SignalsHubView from "@/components/views/SignalsHubView";
 import QuantLabView from "@/components/views/QuantLabView";
 import VerifiedLedgerView from "@/components/views/VerifiedLedgerView";
 import TelegramStudioView from "@/components/views/TelegramStudioView";
-import BetSlipDrawer from "@/components/layout/BetSlipDrawer";
 import {
   LayoutDashboard, Crosshair, FlaskConical, ShieldCheck, Radio,
-  ReceiptText, Search, RefreshCw, Menu, Clock,
+  Search, RefreshCw, Menu, Clock,
 } from "lucide-react";
 import QuantumLogo from "@/components/layout/QuantumLogo";
 
@@ -85,7 +85,8 @@ export function useAppState() {
 }
 
 export default function AppShell() {
-  const { view, sportFilter, betslip, setView, setSportFilter, setBetslipOpen, searchQuery, setSearchQuery, syncing, setSyncing } = useAppStore();
+  // v3.2 Zero-Bankroll Purge — bet-slip store fields removed from the shell.
+  const { view, sportFilter, setView, setSportFilter, searchQuery, setSearchQuery, syncing, setSyncing } = useAppStore();
   const qc = useQueryClient();
   const { data: state, isLoading, isError, error } = useAppState();
   const [online, setOnline] = useState(true);
@@ -107,6 +108,20 @@ export default function AppShell() {
   }, [isError, error]);
 
   const openCount = state?.openSignals.length ?? 0;
+  const footballOpen = state?.openSignals.filter((s) => s.sport === "football").length ?? 0;
+  const tennisOpen = state?.openSignals.filter((s) => s.sport === "tennis").length ?? 0;
+
+  /* v3.2 — Engine Health card values: PURE HIT-RATE only (bankroll/units purged). */
+  const engineLab = state?.agentLab;
+  const engineM = state?.metrics;
+  const engineSettled = engineM ? engineM.wins + engineM.losses + engineM.voids : 0;
+  const engineWinRate = engineLab ? engineLab.pureWinRate * 100 : (engineM?.winRate ?? 0);
+  const engineNoLoss = engineLab
+    ? engineLab.noLossRate * 100
+    : engineSettled > 0 && engineM
+      ? ((engineM.wins + engineM.voids) / engineSettled) * 100
+      : 0;
+
   const todayKey = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const todaySignals = state?.openSignals.filter((s) => s.dayKey === todayKey).length ?? 0;
 
@@ -259,15 +274,23 @@ export default function AppShell() {
               <span className="hidden sm:inline">همگام‌سازی</span>
             </Button>
 
-            <Button
-              onClick={() => setBetslipOpen(true)}
-              size="sm"
-              className="h-9 gap-1.5 bg-emerald-500 text-emerald-950 hover:bg-emerald-400"
-              aria-label="کشوی برگه شرط‌بندی"
+            {/* v3.2 — LIVE consensus counter chip (bet-slip trigger purged) */}
+            <button
+              onClick={() => setView("signals")}
+              className="flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 transition-colors hover:bg-emerald-500/20"
+              title="مرکز پیش‌بینی — سیگنال‌های فعال"
+              aria-label="سیگنال‌های فعال — مشاهده در مرکز پیش‌بینی"
             >
-              <ReceiptText className="size-3.5" />
-              <span className="num">{betslip.length}</span>
-            </Button>
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-300">
+                <span className="size-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
+                <span className="num">
+                  Active Picks: <span dir="ltr">{openCount}</span>
+                </span>
+              </span>
+              <span className="num text-[9px] leading-3 text-emerald-400/80" dir="ltr">
+                FB {footballOpen} · TN {tennisOpen}
+              </span>
+            </button>
           </div>
         </header>
 
@@ -277,14 +300,52 @@ export default function AppShell() {
           <aside className="sticky top-[72px] hidden h-[calc(100vh-96px)] w-64 shrink-0 flex-col overflow-y-auto rounded-2xl border border-slate-800/80 bg-sidebar scroll-slim md:flex">
             <div className="border-b border-slate-800/70 p-3">{sportSwitch}</div>
             {navList}
+            {/* v3.2 — Engine Health card: pure hit-rate (bankroll card purged) */}
             <div className="mt-auto border-t border-slate-800/70 p-3">
               <div className="glass p-3">
-                <div className="text-[10px] text-muted-foreground">موجودی بانک واحدی</div>
-                <div className="num neon-emerald mt-1 text-xl font-bold">
-                  {state ? fmtUnits(state.metrics.bankroll, 0) : "—"} u
+                <div className="text-[10px] text-muted-foreground">سلامت موتور</div>
+                <div className="mt-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-muted-foreground">وین‌ریت خالص</span>
+                    {state ? (
+                      <AnimatedNumber
+                        value={engineWinRate}
+                        decimals={1}
+                        suffix="%"
+                        className="num text-sm font-extrabold text-emerald-300"
+                      />
+                    ) : (
+                      <span className="num text-sm font-extrabold text-emerald-300" dir="ltr">—</span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-muted-foreground">نرخ بدون‌باخت</span>
+                    {state ? (
+                      <AnimatedNumber
+                        value={engineNoLoss}
+                        decimals={1}
+                        suffix="%"
+                        className="num text-sm font-extrabold text-cyan-300"
+                      />
+                    ) : (
+                      <span className="num text-sm font-extrabold text-cyan-300" dir="ltr">—</span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-muted-foreground">Brier</span>
+                    {state?.agentLab ? (
+                      <AnimatedNumber
+                        value={state.agentLab.brier}
+                        decimals={3}
+                        className="num text-sm font-extrabold text-violet-300"
+                      />
+                    ) : (
+                      <span className="num text-sm font-extrabold text-violet-300" dir="ltr">—</span>
+                    )}
+                  </div>
                 </div>
-                <div className="mt-1 text-[10px] text-muted-foreground">
-                  {state ? `${state.metrics.wins} برد / ${state.metrics.losses} باخت` : "در حال بارگذاری…"}
+                <div className="num mt-2 text-[10px] text-muted-foreground" dir="ltr">
+                  FB {footballOpen} + TN {tennisOpen}
                 </div>
                 <div className="mt-2 border-t border-slate-800/70 pt-2">
                   <LiveClock className="text-[11px] text-muted-foreground" />
@@ -315,7 +376,7 @@ export default function AppShell() {
             <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
                 <span className="flex items-center gap-2">
-                  NeoBet Quant Pro v3.1 SUPERAGENT · قفل سخت +EV تنیس (حداقل +۴٪ و استیک کِلی، حذف کامل شرط‌های -EV) · بازار Total Sets روی ضریب تخمینی کاملاً غیرفعال · نتیجه واقعی ست‌ها در کارنامه · Zero-Mock
+                  NeoBet Quant Pro v3.2 PURE HIT-RATE · پاک‌سازی کامل شاخص‌های واحدی از رابط کاربری · وین‌ریت خالص + نرخ بدون‌باخت + Brier · هسته تله‌متری SVG بدون WebGL · Zero-Mock
                 </span>
                 <span className="flex items-center gap-3">
                   <LiveClock className="text-cyan-300" />
@@ -355,8 +416,6 @@ export default function AppShell() {
             })}
           </div>
         </nav>
-
-        <BetSlipDrawer />
       </div>
     </TooltipProvider>
   );

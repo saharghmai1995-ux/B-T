@@ -36,8 +36,14 @@ import {
 export const HISTORY_SEEDED_KEY = "historySeededAt";
 
 const TOXIC_LEAGUES = new Set(["esp.2", "usa.1", "fifa.friendly"]);
+// v3.2 §3 — REAL football backfill window: 14 past days across the REAL ESPN
+// league set (fixes the audited "Football = 0" state: tennis used to eat the
+// whole shared cap, leaving the football tab permanently empty).
 const FOOTBALL_PAST_DAYS = [1, 2, 3, 4]; // all-league probes (yesterday .. -4)
-const FOOTBALL_FILL_DAYS = [5, 6, 7]; // active-league fills up to the full 7-day window
+export const FOOTBALL_LEAGUES_V32 = [
+  "eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "bra.1", "uefa.champions",
+] as const;
+const FOOTBALL_FILL_DAYS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]; // v3.2 league fills to the full 14-day window
 // v2.7.1 hotfix §2.5 — 30 days of finished ATP/WTA (+ Davis Cup ties carried
 // by the tours' scoreboards) so the tennis tab of the ledger never stays zero.
 const TENNIS_RANGE = [30, 1]; // from 30 days ago to yesterday
@@ -46,7 +52,11 @@ const COVERAGE = 0.66; // share of finished fixtures the supervisor would have i
 const ANCHOR_COVERAGE = 0.3; // occasional extra anchor pick (as in live acca anchors)
 const ACCA_EVERY = 6; // every N-th issued signal becomes a 2-leg acca instead
 const MAX_SUMMARY_FETCHES = 90; // closing-odds summary calls per backfill run
-const TENNIS_BACKFILL_MAX = 48; // tennis singles cap per backfill run (cold-start safe)
+// v3.2 §3 — INDEPENDENT per-sport quotas (never a shared cap again):
+// football and tennis each get their own 30-row slot in the ledger.
+export const FOOTBALL_BACKFILL_LIMIT = 30;
+export const TENNIS_BACKFILL_LIMIT = 30;
+const VETO_INSERT_CAP = 60; // v3.2 — Shadow Ledger must hold REAL verdict rows
 
 export interface HistorySeedSummary {
   skipped: boolean;
@@ -103,24 +113,30 @@ async function upsertHistoryMatch(m: FeedMatch): Promise<string> {
   return row.id;
 }
 
-/** REAL history pack only — a total network outage leaves an empty pack. */
+/** REAL history pack only — a total network outage leaves an empty pack.
+ *  v3.2 §3 — football probes the last 4 days across ALL ESPN leagues, then
+ *  fills the FULL 14-day window for the REAL league set (eng.1, esp.1, ita.1,
+ *  ger.1, fra.1, bra.1, uefa.champions). Tennis keeps the 30-day ATP/WTA
+ *  range. Both packs stay 100% REAL — an outage leaves an empty pack. */
 async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[] }> {
   const notes: string[] = [];
 
-  // Probe recent past days across ALL leagues, then fill older days for active ones only.
+  // Probe recent past days across ALL leagues, then fill the 14-day window
+  // for the REAL v3.2 league set.
   const probe: FeedMatch[] = [];
   for (const d of FOOTBALL_PAST_DAYS) {
     probe.push(...await fetchFootballPastDay(pastDayKey(d), [...FOOTBALL_LEAGUES]));
   }
   const activeLeagues = [...new Set(probe.map((m) => m.leagueCode))];
+  const v32Leagues = [...new Set([...activeLeagues, ...FOOTBALL_LEAGUES_V32])];
   const fill: FeedMatch[] = [];
   for (const d of FOOTBALL_FILL_DAYS) {
-    fill.push(...await fetchFootballPastDay(pastDayKey(d), activeLeagues.length ? activeLeagues : [...FOOTBALL_LEAGUES]));
+    fill.push(...await fetchFootballPastDay(pastDayKey(d), v32Leagues));
   }
   const football = [...probe, ...fill];
-  if (activeLeagues.length === 0) notes.push("No finished football fixtures found in the 7-day window");
+  if (activeLeagues.length === 0) notes.push("No finished football fixtures found in the 14-day window");
   const tennis = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
-  if (tennis.length === 0) notes.push("No finished tennis fixtures found in the 7-day window");
+  if (tennis.length === 0) notes.push("No finished tennis fixtures found in the 30-day window");
 
   return { football, tennis, notes };
 }
@@ -175,6 +191,8 @@ function shieldPickForFixture(
         })
       : buildTennisProtectedCandidates({
           homePlayer: m.homeName, awayPlayer: m.awayName,
+          // v3.2 §3 — REAL rankings feed the hard Elo-1500 rejection.
+          homeRank: m.homeRank ?? null, awayRank: m.awayRank ?? null,
           winnerHome: quant.pHome, winnerAway: quant.pAway,
           setBet20Home: f.quotes.find((q) => q.marketKey === "setbet_2_0" && q.selection === "HOME")?.modelProb ?? 0,
           setBet20Away: f.quotes.find((q) => q.marketKey === "setbet_2_0" && q.selection === "AWAY")?.modelProb ?? 0,
@@ -276,9 +294,21 @@ async function buildCandidates(
     ftScore: string; startTime: Date;
     wouldHaveBeen: { marketKey: string; selection: string; price: number; modelProb: number; fixture: { sport: string; homeScore: number; awayScore: number; retired: boolean; detail?: string | null } } | null;
   }> = [];
-  const all = [...pack.football, ...pack.tennis].sort(
-    (a, b) => a.startTime.getTime() - b.startTime.getTime(),
-  );
+  // v3.2 §3.1 — INDEPENDENT per-sport quotas: tennis can NEVER eat the whole
+  // ledger again, and football always gets its own 30-row slot.
+  const caps: Record<"football" | "tennis", number> = {
+    football: FOOTBALL_BACKFILL_LIMIT,
+    tennis: TENNIS_BACKFILL_LIMIT,
+  };
+  const issued: Record<"football" | "tennis", number> = { football: 0, tennis: 0 };
+  // v3.2 §3.1 — per-sport chronological queues. The old SHARED slice(0, 240)
+  // over the merged list starved football forever: 30 days of tennis fixtures
+  // (oldest-first) consumed every slot before football's 14-day window was
+  // ever reached. Each sport now owns its full queue and its own cap.
+  const queues: Record<"football" | "tennis", FeedMatch[]> = {
+    football: [...pack.football].sort((a, b) => a.startTime.getTime() - b.startTime.getTime()),
+    tennis: [...pack.tennis].sort((a, b) => a.startTime.getTime() - b.startTime.getTime()),
+  };
   // Pre-fetch REAL closing odds (ESPN pickcenter) for tradable football fixtures.
   const oddsByEvent = new Map<string, Awaited<ReturnType<typeof fetchFootballSummaryOdds>>>();
   const needOdds = pack.football
@@ -292,7 +322,10 @@ async function buildCandidates(
       if (o) oddsByEvent.set(m.espnEventId, o);
     }));
   }
-  for (const m of all.slice(0, 240)) {
+  for (const sport of ["football", "tennis"] as const) {
+    for (const m of queues[sport]) {
+      // v3.2 §3.1 — quota reached for this sport → stop issuing (quota, not veto).
+      if (issued[sport] >= caps[sport]) break;
     if (m.status !== "post" || m.homeScore == null || m.awayScore == null) continue;
     const id = await upsertHistoryMatch(m);
     const ftScore = `${m.homeScore}-${m.awayScore}`;
@@ -322,7 +355,7 @@ async function buildCandidates(
       vetoes.push({
         ref: `${m.homeName} vs ${m.awayName}`,
         reason: `Supervisor blacklist: league ${m.leagueCode} excluded pre-match (data-integrity risk)`,
-        category: "league",
+        category: "TOXIC_LEAGUE",
         sport: m.sport, league: m.league, ftScore, startTime: m.startTime,
         wouldHaveBeen: soft
           ? { marketKey: soft.marketKey, selection: soft.selection, price: soft.price, modelProb: soft.modelProb, fixture }
@@ -347,15 +380,44 @@ async function buildCandidates(
           leagueAvg(standings[m.leagueCode]),
         )
       : buildTennisFactory(ctx);
+    // v3.2 §3 — HARD Elo-1500 rejection in the backfill path: a tennis match
+    // with NO real ATP/WTA ranking on BOTH sides is an unrated coin-flip and
+    // is rejected IMMEDIATELY — recorded in the Shadow Ledger with the model's
+    // initial pick + the REAL FT so the veto carries a real verdict.
+    if (m.sport === "tennis" && m.homeRank == null && m.awayRank == null) {
+      if (roll <= COVERAGE) {
+        const would = pickVetoCandidate(f.quotes);
+        if (would) {
+          vetoes.push({
+            ref: `${m.homeName} vs ${m.awayName}`,
+            reason: "Elo 1500 vs 1500 — unrated coin-flip rejected (v3.2 §3)",
+            category: "TACTICAL_VETO",
+            sport: m.sport, league: m.league, ftScore, startTime: m.startTime,
+            wouldHaveBeen: {
+              marketKey: would.marketKey, selection: would.selection,
+              price: would.price, modelProb: would.modelProb, fixture,
+            },
+          });
+        }
+      }
+      continue;
+    }
     // v3.1 — the Push-Shield ensemble pick is the fixture's PRIMARY track
     // record row: the v3.1 engine has NO blocking dependency on odds/EV/Kelly
     // (spec §0), so whenever a Tier-cleared protected market exists, the
     // historical ledger records IT instead of the EV-gated ladder pick.
     const shield = shieldPickForFixture(m, ctx, f, findTeamStat(standings, m.leagueCode, m.homeName), findTeamStat(standings, m.leagueCode, m.awayName));
     if (shield) {
+      // v3.2 §3.1 — per-sport quota applies to the shield track as well.
+      const sportKey = shield.sport as "football" | "tennis";
+      if (issued[sportKey] >= caps[sportKey]) continue;
       singles.push(shield);
+      issued[sportKey]++;
       continue;
     }
+    // v3.2 §3.1 — quota reached for this sport → silently stop issuing (the
+    // fixture is NOT vetoed, it simply has no free quota slot left).
+    if (issued[m.sport] >= caps[m.sport]) continue;
     // Primary pick: live-gate single → soft paper pick (EV ≥ 0 vs REAL closing
     // odds — the backfill keeps every edge the model saw, not just deep value)
     // → anchor fallback. Supervisor selectivity applies via the coverage roll.
@@ -369,7 +431,29 @@ async function buildCandidates(
       ? (f.single ?? f.anchors[0] ?? null)
       : (f.single ?? soft ?? f.anchors[0] ?? null);
     const keep = roll <= COVERAGE || (roll <= COVERAGE + ANCHOR_COVERAGE && f.anchors[0]);
-    if (!keep || !c) continue;
+    // v3.2 §3.2 — the engine produced NO tradable candidate (no tier cleared
+    // the ladder / consensus gate): record a REAL shadow veto carrying the
+    // model's initial pick, the veto reason, the REAL FT and the computed
+    // verdict — this is what fills the Shadow Ledger beyond toxic leagues.
+    if (!c) {
+      if (roll <= COVERAGE) {
+        const would = pickVetoCandidate(f.quotes);
+        if (would) {
+          vetoes.push({
+            ref: `${m.homeName} vs ${m.awayName}`,
+            reason: "No candidate cleared the Tier S/A/B ladder (consensus gate)",
+            category: "LOW_CONSENSUS",
+            sport: m.sport, league: m.league, ftScore, startTime: m.startTime,
+            wouldHaveBeen: {
+              marketKey: would.marketKey, selection: would.selection,
+              price: would.price, modelProb: would.modelProb, fixture,
+            },
+          });
+        }
+      }
+      continue;
+    }
+    if (!keep) continue;
     const push = (cand: typeof c) => {
       const evRaw = cand.modelProb * cand.price - 1;
       // §1 hard gate — NO tennis record with ev < +4.0% (or Kelly <= 0) may
@@ -390,11 +474,13 @@ async function buildCandidates(
         price: cand.price, evPct, startTime: m.startTime,
         fixture,
       });
+      issued[m.sport]++;
     };
     push(c);
     // Occasional second (anchor) pick on the same fixture — mirrors live acca anchors.
     if (roll > COVERAGE && f.anchors[0] && f.anchors[0].marketKey !== c.marketKey) {
       push(f.anchors[0]);
+    }
     }
   }
   return { singles, vetoes };
@@ -529,7 +615,11 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
   }
 
   let vetoCount = 0;
-  for (const v of vetoes.slice(0, 14)) {
+  // v3.2 §3.2 — only veto rows with a computable REAL verdict are inserted
+  // (wouldHaveBeen present → resolveSelection vs the REAL FT). Rows that
+  // cannot be scored are skipped so no verdict-null record ever exists.
+  for (const v of vetoes.slice(0, VETO_INSERT_CAP)) {
+    if (!v.wouldHaveBeen) continue;
     let verdict = "UNKNOWN";
     let savedUnits: number | null = null;
     if (v.wouldHaveBeen) {
@@ -667,7 +757,7 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
   let seeded = 0, won = 0, lost = 0, void_ = 0;
 
   for (const m of finished) {
-    if (seeded >= TENNIS_BACKFILL_MAX) break;
+    if (seeded >= TENNIS_BACKFILL_LIMIT) break;
     const id = await upsertHistoryMatch(m);
     const ctx = {
       id, sport: "tennis" as const, league: m.league, leagueCode: m.leagueCode,

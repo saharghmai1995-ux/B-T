@@ -452,25 +452,25 @@ export function CalibrationLab({ state }: { state: AppStatePayload }) {
         <Card className="glass p-4" data-testid="calibration-shadow">
           <h3 className="mb-2 flex items-center gap-2 text-sm font-bold">
             <TrendingUp className="size-4 text-cyan-300" aria-hidden />
-            اقتصاد سایه (Shadow Ledger)
+            اقتصاد سایه (Shadow Ledger) — شمارش وتوها
           </h3>
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-2.5">
-              <div className="text-[10px] text-muted-foreground">وتوهای نجات‌دهنده</div>
+              <div className="text-[10px] text-muted-foreground">وتوهای نجات‌دهنده (SAVED_LOSS)</div>
               <div dir="ltr" className="num mt-0.5 text-lg font-extrabold text-emerald-300">
                 {lab.shadow?.savedLossCount ?? 0}
               </div>
               <div dir="ltr" className="num text-[10px] text-emerald-400/80">
-                {Number(lab.shadow?.savedLossUnits ?? 0).toFixed(1)}u saved
+                ریسک خنثی‌شده با وتو
               </div>
             </div>
             <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5">
-              <div className="text-[10px] text-muted-foreground">بردهای وتوشده</div>
+              <div className="text-[10px] text-muted-foreground">بردهای وتوشده (MISSED_WIN)</div>
               <div dir="ltr" className="num mt-0.5 text-lg font-extrabold text-amber-300">
                 {lab.shadow?.missedWinCount ?? 0}
               </div>
               <div dir="ltr" className="num text-[10px] text-amber-400/80">
-                {Number(lab.shadow?.missedWinUnits ?? 0).toFixed(1)}u missed
+                فرصت از‌دست‌رفته با وتو
               </div>
             </div>
           </div>
