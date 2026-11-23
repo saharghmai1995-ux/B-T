@@ -116,6 +116,9 @@ export function buildNbaFeatures(
       awayTeam: m.awayName,
       homeNetRating: home.differential,
       awayNetRating: away.differential,
+      // v3.3.1 §1a — REAL win% feeds the calibrated 70/30 strength blend.
+      homeWinPct: home.winPercent,
+      awayWinPct: away.winPercent,
       homeBackToBack: homeSched.backToBack,
       awayBackToBack: awaySched.backToBack,
       homeRestDays: homeSched.restDays,

@@ -16,6 +16,7 @@ import {
   buildTennisProtectedCandidates,
 } from "./push-shield-selector";
 import { buildNbaProtectedCandidates, nbaWinProbabilities, type NbaMatchFeatures } from "@/engines/nba/nba-selector";
+import { fetchPublicEspnMarketPrior } from "./market-prior-sensor";
 import {
   runQuantAgent,
   runCoachAgent,
@@ -92,6 +93,8 @@ export async function generateShieldForFixture(params: {
   calib: CalibrationContext;
   /** v3.3 — REAL NBA features (standings differential + schedule B2B/rest). */
   nba?: { features: NbaMatchFeatures; completeness: number; notes: string[] };
+  /** v3.3.1 — REAL ESPN event id for the keyless market-prior fetch (NBA path). */
+  espnEventId?: string;
 }): Promise<ShieldOutcome> {
   const { ctx, quotes, refOdds, statHome, statAway, calib } = params;
   try {
@@ -114,8 +117,20 @@ export async function generateShieldForFixture(params: {
         notes: params.nba.notes,
       };
       const nbaCandidates = buildNbaProtectedCandidates(params.nba.features);
-      const nbaWeights = calib.weightsWithoutMarket; // no NBA sharp prior layer yet
-      const nbaVerdict = runEnsemble(ctx, nbaQuant, nbaCoach, calib.platt, nbaWeights, null, nbaCandidates);
+      // v3.3.1 hotfix §2 — keyless ESPN Core market prior ACTIVATES w_market.
+      // The favourite side is the side our calibrated margin model backs; the
+      // fetch is non-blocking (4s timeout) and any outage keeps the ensemble
+      // honest at 0.65/0.35 model-only weights — never invented prices.
+      let nbaPrior: MarketPriorInput | null = null;
+      if (params.espnEventId) {
+        const favSide = pHomeWin >= 0.5 ? ("HOME" as const) : ("AWAY" as const);
+        const pub = await fetchPublicEspnMarketPrior("basketball", "nba", params.espnEventId, favSide);
+        if (pub.available && typeof pub.impliedProb === "number") {
+          nbaPrior = { favouriteProb: pub.impliedProb, source: "ESPN_CORE_PUBLIC" };
+        }
+      }
+      const nbaWeights = nbaPrior ? calib.weightsWithMarket : calib.weightsWithoutMarket;
+      const nbaVerdict = runEnsemble(ctx, nbaQuant, nbaCoach, calib.platt, nbaWeights, nbaPrior, nbaCandidates);
       if (!nbaVerdict) return { issued: null };
       return await persistShieldVerdict(ctx, nbaVerdict);
     }

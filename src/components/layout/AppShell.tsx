@@ -18,6 +18,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { fmtClock } from "@/lib/api-types";
+import { isStrictlyUpcoming } from "@/lib/format";
 import type { AppStatePayload } from "@/lib/api-types";
 import { AnimatedNumber } from "@/components/shared/primitives";
 import OverviewView from "@/components/views/OverviewView";
@@ -108,10 +109,14 @@ export default function AppShell() {
     if (isError) toast.error("بارگذاری ناموفق — دوباره تلاش کنید", { description: (error as Error)?.message });
   }, [isError, error]);
 
-  const openCount = state?.openSignals.length ?? 0;
-  const footballOpen = state?.openSignals.filter((s) => s.sport === "football").length ?? 0;
-  const tennisOpen = state?.openSignals.filter((s) => s.sport === "tennis").length ?? 0;
-  const basketballOpen = state?.openSignals.filter((s) => s.sport === "basketball").length ?? 0;
+  // v3.3.1 hotfix §3.3 — the header counters MUST read the SAME strictly-upcoming
+  // gate the Predictions Hub list uses (kickoff > now + 5 min), so the
+  // "Active Picks" chip can never disagree with the hub count again.
+  const upcomingOpenSignals = (state?.openSignals ?? []).filter((s) => isStrictlyUpcoming(s.startTime));
+  const openCount = upcomingOpenSignals.length;
+  const footballOpen = upcomingOpenSignals.filter((s) => s.sport === "football").length;
+  const tennisOpen = upcomingOpenSignals.filter((s) => s.sport === "tennis").length;
+  const basketballOpen = upcomingOpenSignals.filter((s) => s.sport === "basketball").length;
 
   /* v3.2 — Engine Health card values: PURE HIT-RATE only (bankroll/units purged). */
   const engineLab = state?.agentLab;

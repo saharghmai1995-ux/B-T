@@ -323,7 +323,7 @@ async function buildCandidates(
   // computed ONLY from games already finished INSIDE the fetched window
   // (no look-ahead, no standings anachronism). The first 1-2 window games of
   // a team stay unrated → honest tactical veto with a REAL would-have-been.
-  const nbaForm = new Map<string, { g: number; diff: number; last: Date }>();
+  const nbaForm = new Map<string, { g: number; diff: number; w: number; last: Date }>();
   // Pre-fetch REAL closing odds (ESPN pickcenter) for tradable football fixtures.
   const oddsByEvent = new Map<string, Awaited<ReturnType<typeof fetchFootballSummaryOdds>>>();
   const needOdds = pack.football
@@ -398,6 +398,9 @@ async function buildCandidates(
         homeTeam: m.homeName, awayTeam: m.awayName,
         homeNetRating: g ? g.diff / g.g : 0,
         awayNetRating: a ? a.diff / a.g : 0,
+        // v3.3.1 §1a — REAL in-window win% feeds the calibrated 70/30 blend.
+        homeWinPct: g && g.g > 0 ? g.w / g.g : undefined,
+        awayWinPct: a && a.g > 0 ? a.w / a.g : undefined,
         homeBackToBack: g ? m.startTime.getTime() - g.last.getTime() <= 1.2 * DAY_MS : false,
         awayBackToBack: a ? m.startTime.getTime() - a.last.getTime() <= 1.2 * DAY_MS : false,
         homeRestDays: g ? Math.floor((m.startTime.getTime() - g.last.getTime()) / DAY_MS) : 7,
@@ -409,7 +412,7 @@ async function buildCandidates(
       const favIsHome = pHomeWin >= 1 - pHomeWin;
       const favWinProb = favIsHome ? pHomeWin : 1 - pHomeWin;
       const rawPick = {
-        marketKey: "1X2",
+        marketKey: "NBA_ML", // v3.3.1 — dedicated NBA key (never football 1X2)
         selection: favIsHome ? "NBA_ML_HOME" : "NBA_ML_AWAY",
         price: marginPrice(favWinProb, BOOK_MARGIN.basketball),
         modelProb: round2(favWinProb * 1000) / 1000,
@@ -463,8 +466,8 @@ async function buildCandidates(
       // Update running REAL form with the actual result (chronological walk).
       for (const [key, scored] of [[gk, m.homeScore ?? 0], [ak, m.awayScore ?? 0]] as const) {
         const opp = key === gk ? m.awayScore ?? 0 : m.homeScore ?? 0;
-        const prev = nbaForm.get(key) ?? { g: 0, diff: 0, last: m.startTime };
-        nbaForm.set(key, { g: prev.g + 1, diff: prev.diff + (scored - opp), last: m.startTime });
+        const prev = nbaForm.get(key) ?? { g: 0, diff: 0, w: 0, last: m.startTime };
+        nbaForm.set(key, { g: prev.g + 1, diff: prev.diff + (scored - opp), w: prev.w + (scored > opp ? 1 : 0), last: m.startTime });
       }
       continue;
     }

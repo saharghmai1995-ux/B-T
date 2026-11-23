@@ -11,6 +11,7 @@
 import type { SettledRow } from "@/core/types";
 import { settleNetProfit, statusFromProfit } from "./ledger-service";
 import { round2 } from "@/core/math/devig";
+import { resolveNbaSelection } from "@/engines/nba/nba-selector";
 
 export interface FixtureResult {
   sport: string;
@@ -117,18 +118,24 @@ export function resolveSelection(key: string, sel: string, r: FixtureResult): Se
   }
 }
 
-/** v3.3 — NBA engine resolution (marketKey@selection vocabulary of nba-selector). */
+/**
+ * v3.3.1 — NBA engine resolution (hotfix §1b).
+ * Dedicated keys NBA_ML / NBA_ALT_SPREAD settle through the exported
+ * `resolveNbaSelection`; the legacy v3.3 vocabulary (1X2 / AH_PLUS_025) is
+ * still honoured so already-settled ledger rows never flip status.
+ * A half-point +4.5 line can NEVER push.
+ */
 function resolveBasketball(key: string, sel: string, r: FixtureResult): SettleVerdict["status"] {
   const h = r.homeScore, a = r.awayScore;
   if (h == null || a == null) return "VOID";
   switch (key) {
-    case "1X2":
-      if (sel === "NBA_ML_HOME") return h > a ? "WON" : "LOST";
-      if (sel === "NBA_ML_AWAY") return a > h ? "WON" : "LOST";
+    case "NBA_ML":
+    case "1X2": // legacy v3.3 rows
+      if (sel === "NBA_ML_HOME" || sel === "NBA_ML_AWAY") return resolveNbaSelection(sel, h, a);
       return "VOID";
-    case "AH_PLUS_025":
-      if (sel === "NBA_ALT_+4.5_HOME") return h + 4.5 > a ? "WON" : "LOST";
-      if (sel === "NBA_ALT_+4.5_AWAY") return a + 4.5 > h ? "WON" : "LOST";
+    case "NBA_ALT_SPREAD":
+    case "AH_PLUS_025": // legacy v3.3 rows
+      if (sel === "NBA_ALT_+4.5_HOME" || sel === "NBA_ALT_+4.5_AWAY") return resolveNbaSelection(sel, h, a);
       return "VOID";
     default:
       return "VOID";

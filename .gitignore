@@ -59,10 +59,9 @@ server.log
 upload/
 download/
 
-.snapshots/
+# v3.3.1 — snapshots are TRACKED (dashboard proof for the GitHub worklog)
 
 # internal tool artifacts
 tool-results/
 upload/
-.snapshots/
 agent-ctx/

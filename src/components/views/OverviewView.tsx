@@ -362,10 +362,13 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
           footballScanned={state.matches.filter((mt) => mt.sport === "football").length}
           tennisScanned={state.matches.filter((mt) => mt.sport === "tennis").length}
           nbaScanned={state.matches.filter((mt) => mt.sport === "basketball").length}
+          // v3.3.1 hotfix §3.3 — the SAME strictly-upcoming gate the Predictions
+          // Hub list uses; the 3D core's ACTIVE PRE-MATCH can never disagree
+          // with the hub counter again (the 18-vs-15 bug stays dead).
           activePicks={{
-            football: state.openSignals.filter((s) => s.sport === "football").length,
-            tennis: state.openSignals.filter((s) => s.sport === "tennis").length,
-            nba: state.openSignals.filter((s) => s.sport === "basketball").length,
+            football: state.openSignals.filter((s) => s.sport === "football" && isStrictlyUpcoming(s.startTime)).length,
+            tennis: state.openSignals.filter((s) => s.sport === "tennis" && isStrictlyUpcoming(s.startTime)).length,
+            nba: state.openSignals.filter((s) => s.sport === "basketball" && isStrictlyUpcoming(s.startTime)).length,
           }}
           winRatePct={pureWinRate}
           noLossRatePct={telemetryNoLossRate}

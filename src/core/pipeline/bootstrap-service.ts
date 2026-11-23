@@ -243,7 +243,15 @@ function buildAgentLab(
   }));
   const calibration = computeCalibration(calibRows);
   const platt = trainPlatt(calibRows);
-  const weights = computeEnsembleWeights(calibration, false, platt);
+  // v3.3.1 hotfix §2 — the DISPLAYED ensemble weights mirror the LIVE blend:
+  // when any open SHIELD signal locked a REAL sharp-market prior
+  // (ESPN Core / The Odds API / OddsPapi), the ensemble runs 0.50/0.30/0.20
+  // and the SHARP MARKET PRIOR card flips STANDBY → ACTIVE 20%. Without an
+  // open prior the honest model-only 0.65/0.35 view stays (no fake weights).
+  const marketPriorLive = signals.some(
+    (s) => s.status === "OPEN" && s.line === "SHIELD" && !!s.sharpSource,
+  );
+  const weights = computeEnsembleWeights(calibration, marketPriorLive, platt);
   const streak = computeWinStreak([...calibRows].reverse()); // newest-first
   const shadow = auditShadowLedger(
     calibRows,
@@ -481,6 +489,18 @@ export async function ensureBootstrapState(): Promise<AppState> {
   } catch (err) {
     console.error("v3.3 ledger migration failed (contained)", err);
   }
+  // v3.3.1 hotfix §3 — ONE-TIME data hygiene: purge the "Alpha vs Beta" /
+  // "Test Masters" Vitest leak from the live DB + every uncalibrated NBA row
+  // (old 1X2/AH_PLUS_025 keys or >90% overconfidence), then rebuild from the
+  // REAL 14-day backfill under the calibrated v3.3.1 model.
+  try {
+    const v331 = await runV331DataHygieneMigration();
+    if (!v331.skipped) {
+      console.log(`[v3.3.1] data hygiene: ${v331.purgedTestRows} test-leak rows + ${v331.purgedNbaRows} uncalibrated NBA rows purged — calibrated reseed fired`);
+    }
+  } catch (err) {
+    console.error("v3.3.1 data hygiene failed (contained)", err);
+  }
   // v2.7.2 hotfix — 30-day tennis backfill runs NON-BLOCKING (background,
   // single-flight): the ESPN range fetch + hundreds of upserts used to run
   // synchronously here and held every /api/bootstrap response for ~12s,
@@ -699,6 +719,116 @@ export function runV33SeedBackground(): Promise<HistorySeedSummary> {
       .finally(() => { v33SeedInFlight = null; });
   }
   return v33SeedInFlight;
+}
+
+export interface V331HygieneSummary {
+  skipped: boolean;
+  purgedTestRows: number;
+  purgedNbaRows: number;
+  ranAt: string;
+}
+
+const V331_HYGIENE_KEY = "v331DataHygieneAt";
+
+/**
+ * v3.3.1 hotfix §3 — ONE-TIME data hygiene migration (contained like v3.2/3.3):
+ *   a) Vitest leak purge — every Match/ShadowVeto row carrying the
+ *      "Test Masters" / "Alpha vs Beta" test fixtures is deleted (Match delete
+ *      cascades its Signal + OddsQuote rows via FK onDelete: Cascade).
+ *   b) Uncalibrated NBA rebuild — basketball signals still carrying the old
+ *      football vocabulary (1X2 / AH_PLUS_025) or >90% overconfidence are
+ *      purged with their SHIELD vetoes, then the calibrated v3.3.1 backfill
+ *      rebuilds them in the background (single-flight, never blocks bootstrap).
+ */
+export async function runV331DataHygieneMigration(opts?: { force?: boolean }): Promise<V331HygieneSummary> {
+  const ranAt = new Date().toISOString();
+  if (!opts?.force) {
+    const seen = await getSetting(V331_HYGIENE_KEY);
+    if (seen) return { skipped: true, purgedTestRows: 0, purgedNbaRows: 0, ranAt };
+  }
+  let purgedTestRows = 0;
+  let purgedNbaRows = 0;
+
+  // a) Test-leak purge — fixtures first (cascades quotes + signals).
+  try {
+    const m = await db.match.deleteMany({
+      where: {
+        OR: [
+          { league: { contains: "Test Masters" } },
+          { league: { contains: "Test League" } },
+          { homeName: "Alpha", awayName: "Beta" },
+          { homeName: "Alpha", awayName: "Gamma" },
+        ],
+      },
+    });
+    purgedTestRows += m.count;
+  } catch (err) {
+    console.error("v3.3.1 test-leak match purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const v = await db.shadowVeto.deleteMany({
+      where: {
+        OR: [
+          { repMatch: { contains: "Alpha vs Beta" } },
+          { repMatch: { contains: "Alpha vs Gamma" } },
+          { repMatch: { contains: "Test Masters" } },
+          { repMatch: { contains: "Test League" } },
+          { league: { contains: "Test Masters" } },
+          { league: { contains: "Test League" } },
+        ],
+      },
+    });
+    purgedTestRows += v.count;
+  } catch (err) {
+    console.error("v3.3.1 test-leak veto purge failed (rows kept, bootstrap continues)", err);
+  }
+  // Defensive signal-side sweep (survivor rows whose label still leaks).
+  try {
+    const s = await db.signal.deleteMany({
+      where: {
+        OR: [
+          { marketLabel: { contains: "Alpha vs" } },
+          { marketLabel: { contains: "Test Masters" } },
+          { marketLabel: { contains: "Test League" } },
+        ],
+      },
+    });
+    purgedTestRows += s.count;
+  } catch (err) {
+    console.error("v3.3.1 test-leak signal purge failed (rows kept, bootstrap continues)", err);
+  }
+
+  // b) Uncalibrated NBA rebuild — old keys or >90% overconfidence never stay.
+  try {
+    const s = await db.signal.deleteMany({
+      where: {
+        sport: "basketball",
+        OR: [
+          { marketKey: { in: ["1X2", "AH_PLUS_025"] } },
+          { modelProb: { gt: 0.90 } },
+        ],
+      },
+    });
+    purgedNbaRows += s.count;
+  } catch (err) {
+    console.error("v3.3.1 NBA signal purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const v = await db.shadowVeto.deleteMany({
+      where: { sport: "basketball", category: "SHIELD_ENGINE" },
+    });
+    purgedNbaRows += v.count;
+  } catch (err) {
+    console.error("v3.3.1 NBA veto purge failed (rows kept, bootstrap continues)", err);
+  }
+
+  try {
+    await setSetting(V331_HYGIENE_KEY, ranAt);
+  } catch (err) {
+    console.error("v3.3.1 hygiene flag stamping failed", err);
+  }
+  void runV33SeedBackground(); // calibrated rebuild from the REAL 14-day backfill
+  return { skipped: false, purgedTestRows, purgedNbaRows, ranAt };
 }
 
 /**

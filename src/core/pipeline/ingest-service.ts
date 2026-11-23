@@ -321,10 +321,13 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       if (shield.issued === "VETO") shieldVetoes++;
     } else if (m.sport === "basketball") {
       // v3.3 §4 — Engine 3: normal-CDF margin model over REAL standings.
+      // v3.3.1 §2 — espnEventId feeds the keyless ESPN Core market prior so
+      // w_market (20%) activates on the SHARP MARKET PRIOR card.
       const feats = buildNbaFeatures(pack, m);
       const shield = await generateShieldForFixture({
         ctx, quotes: [], refOdds: null, statHome: null, statAway: null, calib,
         nba: feats ?? undefined,
+        espnEventId: m.espnEventId,
       });
       if (shield.issued === "SIGNAL") shields++;
       if (shield.issued === "VETO") shieldVetoes++;
