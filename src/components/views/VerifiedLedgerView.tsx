@@ -1,29 +1,42 @@
 "use client";
 
 /**
- * View 4 — VerifiedLedgerView (v2.0): SHA-256 verified settlement ledger.
- * Top: 3 analytical charts (equity curve / winrate & profit by sport / profit by market family).
- * Then: advanced filters bar (search, status, sport, league, time-range, CSV/JSON audit export),
- * expandable verified rows with REAL pre-match lock + settlement timestamps,
- * and the Shadow Ledger Tracker module (veto KPIs + full verdict table).
+ * View 4 — VerifiedLedgerView (v3.1): SHA-256 verified settlement ledger.
+ *
+ * v2.0 base: 3 analytical charts (equity curve / winrate & profit by sport /
+ * profit by market family), advanced filters bar (search, status, sport,
+ * league, time-range, CSV/JSON audit export), expandable verified rows with
+ * REAL pre-match lock + settlement timestamps, and the Shadow Ledger Tracker.
+ *
+ * v3.1 layer (SuperAgent Push-Shield Hit-Rate Engine):
+ *  - Cumulative Win-Rate (pure) + No-Loss Rate dual-line trend chart
+ *  - Per-tier performance breakdown (TIER_S / TIER_A / TIER_B)
+ *  - Per-shield-type breakdown (FULL_PUSH / HALF_PUSH / DOUBLE_OUTCOME / DIRECT_WIN)
+ *  - Shadow Ledger Tracker upgrade: Shadow Win-Rate Lift headline, signed units,
+ *    SHARP DIVERGENCE cyan tags, v3.1 SHIELD_ENGINE badges
+ *  - Tier/Shield badges on settled rows + full FT/sets detail in the expansion
  */
 
 import { useMemo, useState } from "react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import {
+  AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+} from "recharts";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState, TeamAvatar, AnimatedNumber, HashChip } from "@/components/shared/primitives";
+import {
+  EmptyState, TeamAvatar, AnimatedNumber, HashChip, TierBadge, ShieldBadge, NoLossChip,
+} from "@/components/shared/primitives";
 import { lineLabel, statusColor, fmtPrice, fmtUnits, fmtDateTimeFa } from "@/lib/api-types";
 import { formatSafeDateTime } from "@/lib/format";
 import { calculateSafeQuarterKellyStake } from "@/core/math/kelly";
 import type { AppStatePayload, AppSignal, AppVeto } from "@/lib/api-types";
 import { officialBetLine } from "@/lib/markets";
 import { formatStoredMarketLabel } from "@/core/bookmakers/market-aliases";
-import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert } from "lucide-react";
+import { Search, Download, ChevronDown, ShieldCheck, ExternalLink, ShieldAlert, TrendingUp, Layers } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -32,30 +45,81 @@ import { cn } from "@/lib/utils";
 const sportGlyph = (sport: string | null): string =>
   sport === "tennis" ? "🎾" : sport === "football" ? "⚽" : "—";
 
-/** Verdict → badge text/classes (SAVED_LOSS | MISSED_WIN | PENDING | UNKNOWN | null). */
-function verdictBadge(v: AppVeto): { text: string; cls: string } {
+/**
+ * v3.1 — normalize a 0–1 fraction rate to percent (defensive: values already
+ * stored on a 0–100 scale pass through untouched).
+ */
+const pct0 = (v: number): number => {
+  if (!Number.isFinite(v)) return 0;
+  return v <= 1 ? v * 100 : v;
+};
+
+const fmtPct = (v: number, d = 1): string => `${pct0(v).toFixed(d)}%`;
+
+/** v3.1 — Sharp-divergence veto detector (reason carries "Sharp*" / "واگرایی"). */
+const isSharpDivergence = (reason: string | null | undefined): boolean =>
+  !!reason && /sharp|واگرایی/i.test(reason);
+
+/** v3.1 — verdict → compact English tag (SAVED LOSS / MISSED WIN / PENDING / UNKNOWN). */
+function verdictTag(v: AppVeto): { text: string; cls: string } {
   switch (v.verdict) {
     case "SAVED_LOSS":
-      return {
-        text: `✅ وتوی موفق — نجات ${fmtUnits(v.savedUnits ?? 0, 1)}u`,
-        cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-      };
+      return { text: "SAVED LOSS", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" };
     case "MISSED_WIN":
-      return {
-        text: `⚠️ فرصت ازدست‌رفته ${fmtUnits(v.savedUnits ?? 0, 1)}u`,
-        cls: "border-amber-400/40 bg-amber-400/10 text-amber-300",
-      };
+      return { text: "MISSED WIN", cls: "border-amber-400/40 bg-amber-400/10 text-amber-300" };
     case "PENDING":
-      return {
-        text: "در انتظار نتیجه",
-        cls: "border-slate-600/70 bg-slate-500/10 text-slate-300",
-      };
+      return { text: "PENDING", cls: "border-slate-600/70 bg-slate-500/10 text-slate-300" };
     default:
-      return {
-        text: "نامشخص",
-        cls: "border-slate-700/80 bg-secondary text-slate-400",
-      };
+      return { text: "UNKNOWN", cls: "border-slate-700/80 bg-secondary text-slate-400" };
   }
+}
+
+/** v3.1 — signed units for the Shadow Tracker: saved capital is positive, missed opportunity is negative. */
+function signedUnits(v: AppVeto): { text: string; cls: string; title: string } {
+  const u = Math.abs(v.savedUnits ?? 0);
+  if (v.verdict === "SAVED_LOSS") {
+    return { text: `+${fmtUnits(u, 1)}u`, cls: "text-emerald-300", title: "سرمایه نجات‌یافته از باخت" };
+  }
+  if (v.verdict === "MISSED_WIN") {
+    return { text: `-${fmtUnits(u, 1)}u`, cls: "text-amber-300", title: "سود ازدست‌رفته (هزینه فرصت)" };
+  }
+  return { text: "—", cls: "text-slate-500", title: "" };
+}
+
+/** v3.1 — confidence tier display order. */
+const TIER_ORDER = ["TIER_S", "TIER_A", "TIER_B"] as const;
+
+/** v3.1 — shield-type display order + Persian labels + equivalent market-family buckets. */
+const SHIELD_ORDER: Array<{ key: string; label: string; buckets: string }> = [
+  { key: "FULL_PUSH_SHIELD", label: "سپر کامل", buckets: "Draw No Bet · Asian Total Over 2.0" },
+  { key: "HALF_PUSH_SHIELD", label: "نیمه‌برگشت", buckets: "Asian Handicap +0.25 · Asian Total Under 3.0" },
+  { key: "DOUBLE_OUTCOME_SHIELD", label: "دو نتیجه", buckets: "Double Chance" },
+  { key: "DIRECT_WIN", label: "برد مستقیم", buckets: "Match Winner · Set +1.5" },
+];
+
+/** Compact rate bar used by the tier cards and shield table. */
+function RateBar({ label, value, tone }: { label: string; value: number; tone: "emerald" | "cyan" }) {
+  const pct = Math.min(100, Math.max(0, pct0(value)));
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-[76px] shrink-0 text-[10px] text-muted-foreground">{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+        <div
+          className={cn("h-full rounded-full", tone === "emerald" ? "bg-emerald-400" : "bg-cyan-400")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span
+        dir="ltr"
+        className={cn(
+          "num w-12 shrink-0 text-left text-[10px] font-bold",
+          tone === "emerald" ? "text-emerald-300" : "text-cyan-300",
+        )}
+      >
+        {pct.toFixed(1)}%
+      </span>
+    </div>
+  );
 }
 
 const STATUSES = [
@@ -78,8 +142,11 @@ const RANGES = [
   ["30", "۳۰ روز"],
 ] as const;
 
+type TierBucket = { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number };
+
 export default function VerifiedLedgerView({ state }: { state: AppStatePayload }) {
   const m = state.metrics;
+  const lab = state.agentLab;
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<"all" | "WON" | "LOST" | "VOID">("all");
   const [sport, setSport] = useState<"all" | "football" | "tennis">("all");
@@ -164,28 +231,98 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
     };
   }, [state.settledSignals, stakeView]);
 
-  /* CSV / JSON audit export (includes lockedAt) */
+  /* v3.1 — cumulative Win-Rate + No-Loss Rate trend over the settled history,
+   * one point per settlement (settledAt ascending):
+   *   pureWinRate = WON / decided(WON+LOST) so far
+   *   noLossRate  = (WON + VOID) / settled so far — the shield metric. */
+  const trend = useMemo(() => {
+    const ordered = [...state.settledSignals]
+      .filter((s) => s.status !== "OPEN")
+      .sort(
+        (a, b) =>
+          new Date(a.settledAt ?? a.lockedAt).getTime() -
+          new Date(b.settledAt ?? b.lockedAt).getTime(),
+      );
+    let won = 0;
+    let lost = 0;
+    let voids = 0;
+    const pts = ordered.map((s, i) => {
+      if (s.status === "WON") won++;
+      else if (s.status === "LOST") lost++;
+      else voids++;
+      const decided = won + lost;
+      const settled = decided + voids;
+      return {
+        idx: i + 1,
+        label: (s.settledAt ?? s.lockedAt).slice(5, 10),
+        winRate: decided > 0 ? Math.round((won / decided) * 1000) / 10 : 0,
+        noLossRate: settled > 0 ? Math.round(((won + voids) / settled) * 1000) / 10 : 0,
+      };
+    });
+    return { pts, decided: won + lost, settled: pts.length };
+  }, [state.settledSignals]);
+  const lastTrend = trend.pts.length > 0 ? trend.pts[trend.pts.length - 1] : null;
+
+  /* v3.1 — per-tier breakdown (TIER_S / TIER_A / TIER_B), "بدون داده" when absent. */
+  const tierStats = lab?.tierStats ?? {};
+  const tierRows = TIER_ORDER.map((key) => ({ key, st: tierStats[key] as TierBucket | undefined }));
+  const tierHasData = TIER_ORDER.some((k) => !!tierStats[k]);
+
+  /* v3.1 — per-shield-type breakdown (known keys first, unknown extras appended). */
+  const shieldStats = lab?.shieldStats ?? {};
+  const shieldRows = useMemo(() => {
+    const known = SHIELD_ORDER.map((o) => ({ ...o, st: shieldStats[o.key] as TierBucket | undefined }));
+    const extras = Object.keys(shieldStats)
+      .filter((k) => !SHIELD_ORDER.some((o) => o.key === k))
+      .map((k) => ({ key: k, label: k, buckets: "", st: shieldStats[k] as TierBucket | undefined }));
+    return [...known, ...extras];
+  }, [shieldStats]);
+  const shieldHasData = Object.keys(shieldStats).length > 0;
+
+  /* v3.1 — Shadow Ledger economics. Prefer the AgentLab audit; fall back to a
+   * direct scan of the veto cards when the lab block is absent. */
+  const shadowFallback = useMemo(() => {
+    let savedLossCount = 0, savedLossUnits = 0, missedWinCount = 0, missedWinUnits = 0;
+    for (const v of state.shadowVetoes) {
+      if (v.verdict === "SAVED_LOSS") {
+        savedLossCount++;
+        savedLossUnits += Math.max(0, v.savedUnits ?? 0);
+      } else if (v.verdict === "MISSED_WIN") {
+        missedWinCount++;
+        missedWinUnits += Math.abs(Math.min(0, v.savedUnits ?? 0));
+      }
+    }
+    return { savedLossCount, savedLossUnits, missedWinCount, missedWinUnits };
+  }, [state.shadowVetoes]);
+  const shadow = lab?.shadow ?? { ...shadowFallback, shadowLiftPct: 0, winRateWithVeto: 0, winRateWithoutVeto: 0 };
+  const hasLift = !!lab;
+  const netShadowImpact = hasLift
+    ? Math.round((shadow.savedLossUnits - shadow.missedWinUnits) * 100) / 100
+    : m.savedCapital;
+
+  /* CSV / JSON audit export (includes lockedAt + v3.1 ensemble metadata) */
   function download(kind: "csv" | "json") {
     const data = rows.map((s) => ({
       id: s.id, match: s.matchInfo, league: s.league, sport: s.sport, line: s.line,
+      tier: s.tier ?? "", shieldType: s.shieldType ?? "", noLossProb: s.noLossProb ?? "",
       market: s.marketLabel, selection: s.selection, price: s.price, evPct: s.evPct,
       stake: s.stake, stakeMode: s.stakeMode, status: s.status, netProfit: s.netProfit,
-      setResult: s.sport === "tennis" ? (s.setResult ?? "") : "",
+      setResult: s.sport === "tennis" ? (s.setResult ?? "") : (s.homeScore != null && s.awayScore != null ? `${s.homeScore}-${s.awayScore}` : ""),
       sha256: s.shaHash, lockedAt: s.lockedAt, settledAt: s.settledAt, espn: s.espnUrl,
     }));
     const blob = kind === "json"
       ? new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
       : new Blob([
           [
-            "id", "match", "league", "sport", "line", "market", "selection", "price", "ev%",
+            "id", "match", "league", "sport", "line", "tier", "shieldType", "market", "selection", "price", "ev%",
             "stake", "stakeMode", "status", "netProfit", "setResult", "sha256", "lockedAt", "settledAt", "espn",
           ].join(","),
           "\n",
           ...data.map((d) =>
             [
-              d.id, `"${d.match}"`, `"${d.league}"`, d.sport, d.line, `"${d.market}"`, d.selection,
-              d.price, d.evPct, d.stake, d.stakeMode, d.status, d.netProfit, `"${d.setResult}"`, d.sha256, d.lockedAt,
-              d.settledAt, d.espn,
+              d.id, `"${d.match}"`, `"${d.league}"`, d.sport, d.line, d.tier, d.shieldType,
+              `"${d.market}"`, d.selection, d.price, d.evPct, d.stake, d.stakeMode, d.status, d.netProfit,
+              `"${d.setResult}"`, d.sha256, d.lockedAt, d.settledAt, d.espn,
             ].join(","),
           ),
         ], { type: "text/csv" });
@@ -416,9 +553,200 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
             )}
           </div>
         </div>
+
+        {/* v3.1 — d) Cumulative Win-Rate (pure) + No-Loss Rate dual-line trend */}
+        <div className="mt-3 rounded-xl border border-slate-800/80 bg-secondary/20 p-3" data-testid="ledger-trend-chart">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-200">
+              <TrendingUp className="size-3.5 text-emerald-400" />
+              روند تجمعی وین‌ریت خالص و نرخ سربه‌سر (بدون باخت)
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200">
+                وین‌ریت خالص: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.winRate.toFixed(1) : "0.0"}%</span>
+              </span>
+              <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
+                نرخ سربه‌سر: <span className="num font-bold" dir="ltr">{lastTrend ? lastTrend.noLossRate.toFixed(1) : "0.0"}%</span>
+              </span>
+              <span className="num text-muted-foreground" dir="ltr">
+                {trend.settled} تسویه · {trend.decided} تعیین‌شده
+              </span>
+            </div>
+          </div>
+          {trend.pts.length === 0 ? (
+            <div className="grid h-44 place-items-center text-[11px] text-muted-foreground">
+              رکورد تسویه‌شده‌ای برای رسم روند تجمعی ثبت نشده است
+            </div>
+          ) : (
+            <div className="h-56" dir="ltr" style={{ filter: "drop-shadow(0 0 8px rgba(0, 229, 255, 0.12))" }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trend.pts} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke="#1B2537" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "#8FA3BF", fontSize: 9 }}
+                    minTickGap={24}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    ticks={[0, 25, 50, 75, 100]}
+                    tick={{ fill: "#8FA3BF", fontSize: 9 }}
+                    width={38}
+                    tickFormatter={(v: number) => `${v}%`}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#0C1220", border: "1px solid #1B2537", borderRadius: 12, fontSize: 11 }}
+                    labelStyle={{ color: "#8FA3BF" }}
+                    formatter={(v, n) => [`${Number(v).toFixed(1)}%`, String(n)]}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
+                  <Line
+                    type="monotone"
+                    dataKey="winRate"
+                    name="وین‌ریت خالص تجمعی (WON/تعیین‌شده)"
+                    stroke="#34D399"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="noLossRate"
+                    name="نرخ سربه‌سر تجمعی ((WON+VOID)/تسویه)"
+                    stroke="#00E5FF"
+                    strokeWidth={2}
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
       </Card>
 
-      {/* ── 2. Advanced filters ──────────────────────────────────────────── */}
+      {/* ── 2. v3.1 Agent Lab — per-tier & per-shield breakdown ─────────── */}
+      <Card className="glass p-4" data-testid="agentlab-breakdown">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 text-sm font-bold text-violet-300">
+            <Layers className="size-4 text-violet-400" />
+            تفکیک عملکرد تایرها و انواع سپر (SuperAgent v3.1)
+          </h2>
+          <span className="rounded-md border border-slate-700 bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+            وین‌ریت = WON/تعیین‌شده · نرخ سربه‌سر = (WON+VOID)/تسویه
+          </span>
+        </div>
+
+        {/* a) Confidence tiers */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="tier-breakdown">
+          {tierRows.map(({ key, st }) => (
+            <div key={key} className="rounded-xl border border-slate-800/80 bg-secondary/20 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <TierBadge tier={key} />
+                <span className="num text-[10px] text-slate-400" dir="ltr">
+                  {st ? `${st.settled} settled` : "—"}
+                </span>
+              </div>
+              {st ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                    <span className="text-emerald-300">برد <span className="num font-bold" dir="ltr">{st.wins}</span></span>
+                    <span className="text-red-300">باخت <span className="num font-bold" dir="ltr">{st.losses}</span></span>
+                    <span className="text-slate-400">ابطال <span className="num font-bold" dir="ltr">{st.voids}</span></span>
+                  </div>
+                  <RateBar label="وین‌ریت خالص" value={st.winRate} tone="emerald" />
+                  <RateBar label="نرخ سربه‌سر" value={st.noLossRate} tone="cyan" />
+                </div>
+              ) : (
+                <div className="grid h-[62px] place-items-center rounded-lg border border-dashed border-slate-700/60 bg-secondary/30 text-[11px] text-muted-foreground">
+                  بدون داده
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {!tierHasData && (
+          <p className="mt-2 text-[10px] leading-5 text-muted-foreground">
+            بلوک Agent Lab هنوز برای این payload فعال نیست — پس از اولین اجرای موتور v3.1، آمار تایرها همین‌جا ظاهر می‌شود.
+          </p>
+        )}
+
+        {/* b) Push-Shield types */}
+        <div className="mt-4 rounded-xl border border-slate-800/80 bg-secondary/20 p-3" data-testid="shield-breakdown">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-slate-200">عملکرد به تفکیک نوع سپر (Push-Shield Engine)</span>
+            <span className="text-[9px] text-muted-foreground">معادل مارکتی: DNB · AH +0.25 · دو نتیجه · توتال آسیایی</span>
+          </div>
+          {shieldRows.length === 0 || !shieldHasData ? (
+            <div className="grid h-16 place-items-center rounded-lg border border-dashed border-slate-700/60 bg-secondary/30 text-[11px] text-muted-foreground">
+              بدون داده
+            </div>
+          ) : (
+            <table className="w-full border-collapse text-right text-[11px]">
+              <thead>
+                <tr>
+                  {[
+                    ["نوع سپر", ""],
+                    ["برد", ""],
+                    ["باخت", "hidden sm:table-cell"],
+                    ["ابطال", "hidden sm:table-cell"],
+                    ["وین‌ریت خالص", ""],
+                    ["نرخ سربه‌سر", ""],
+                    ["تسویه", "hidden md:table-cell"],
+                  ].map(([h, hideCls]) => (
+                    <th
+                      key={h}
+                      className={cn(
+                        "whitespace-nowrap border-b border-slate-800 px-2 py-1.5 text-[10px] font-semibold text-muted-foreground",
+                        hideCls,
+                      )}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {shieldRows.map(({ key, label, buckets, st }) => (
+                  <tr key={key} className="transition-colors hover:bg-secondary/40">
+                    <td className="px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <ShieldBadge shieldType={key} />
+                        {key === label && <span className="text-[10px] text-slate-300">{label}</span>}
+                      </div>
+                      {buckets && (
+                        <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">{buckets}</div>
+                      )}
+                    </td>
+                    <td className="num px-2 py-1.5 font-bold text-emerald-300">{st?.wins ?? 0}</td>
+                    <td className="num hidden px-2 py-1.5 font-bold text-red-300 sm:table-cell">{st?.losses ?? 0}</td>
+                    <td className="num hidden px-2 py-1.5 font-bold text-slate-400 sm:table-cell">{st?.voids ?? 0}</td>
+                    <td className="px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-800">
+                          <div className="h-full rounded-full bg-emerald-400" style={{ width: `${Math.min(100, Math.max(0, st ? pct0(st.winRate) : 0))}%` }} />
+                        </div>
+                        <span className="num text-[10px] font-bold text-emerald-300" dir="ltr">{st ? fmtPct(st.winRate) : "—"}</span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-800">
+                          <div className="h-full rounded-full bg-cyan-400" style={{ width: `${Math.min(100, Math.max(0, st ? pct0(st.noLossRate) : 0))}%` }} />
+                        </div>
+                        <span className="num text-[10px] font-bold text-cyan-300" dir="ltr">{st ? fmtPct(st.noLossRate) : "—"}</span>
+                      </div>
+                    </td>
+                    <td className="num hidden px-2 py-1.5 text-slate-400 md:table-cell">{st?.settled ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
+
+      {/* ── 3. Advanced filters ──────────────────────────────────────────── */}
       <Card className="glass p-3">
         <div className="flex flex-wrap items-center gap-2">
           {/* search: match / league / market / hash */}
@@ -503,7 +831,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
         </div>
       </Card>
 
-      {/* ── 3. Verified ledger rows ──────────────────────────────────────── */}
+      {/* ── 4. Verified ledger rows ──────────────────────────────────────── */}
       {rows.length === 0 ? (
         <EmptyState
           icon="🔐"
@@ -564,6 +892,15 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     </div>
                   </div>
                 </div>
+                {/* v3.1 — confidence tier + push-shield badges (desktop only;
+                    on mobile they render inside the expanded detail panel). */}
+                <div
+                  className="hidden shrink-0 items-center gap-1 md:flex"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <TierBadge tier={s.tier} />
+                  <ShieldBadge shieldType={s.shieldType} />
+                </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span onClick={(e) => e.stopPropagation()}>
                     <HashChip hash={s.shaHash} onClick={() => setVerify(s)} />
@@ -574,6 +911,35 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
 
               {expanded === s.id && (
                 <div className="border-t border-slate-800/70 bg-secondary/30 p-3">
+                  {/* v3.1 — SuperAgent ensemble metadata */}
+                  <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                    <TierBadge tier={s.tier} />
+                    <ShieldBadge shieldType={s.shieldType} />
+                    {s.noLossProb != null && (
+                      <span className="rounded-md border border-slate-700 bg-secondary px-1.5 py-0.5 text-[10px] text-slate-300">
+                        احتمال سربه‌سر: <NoLossChip value={s.noLossProb} />
+                      </span>
+                    )}
+                    {s.consensusPct != null && (
+                      <span
+                        className="num rounded-md border border-slate-700 bg-secondary px-1.5 py-0.5 text-[10px] text-slate-300"
+                        dir="ltr"
+                        title="اجماع انسامبل SuperAgent"
+                      >
+                        consensus {s.consensusPct}%
+                      </span>
+                    )}
+                    {s.sharpAlert && (
+                      <span
+                        className="rounded-md border border-red-400/40 bg-red-400/10 px-1.5 py-0.5 text-[10px] font-bold text-red-300"
+                        dir="ltr"
+                        title="هشدار واگرایی شارپ‌ها"
+                      >
+                        SHARP ALERT
+                      </span>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-3">
                     <div>
                       <span className="text-muted-foreground">خط تولید:</span>{" "}
@@ -611,22 +977,34 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                         {s.evPct >= 0 ? "+" : ""}{s.evPct.toFixed(1)}%
                       </span>
                     </div>
-                    {/* v2.7.2 §3 — tennis FT set result in the expanded panel */}
-                    {s.sport === "tennis" && (
-                      <div>
-                        <span className="text-muted-foreground">نتیجه ست‌ها (FT):</span>{" "}
-                        {s.setResult ? (
+                    {/* v3.1 — unified FT/sets display: tennis = ESPN set scores,
+                        football = final ESPN scoreline "H-A". */}
+                    <div>
+                      <span className="text-muted-foreground">نتیجه نهایی (FT):</span>{" "}
+                      {s.sport === "tennis" ? (
+                        s.setResult ? (
                           <span
                             className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
                             dir="ltr"
+                            title="نتیجه واقعی ست‌ها از فید ESPN (linescores)"
                           >
                             {s.setResult}
                           </span>
                         ) : (
                           <span className="text-[10px] text-slate-500">از فید ESPN در دسترس نیست</span>
-                        )}
-                      </div>
-                    )}
+                        )
+                      ) : s.homeScore != null && s.awayScore != null ? (
+                        <span
+                          className="num inline-block rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300"
+                          dir="ltr"
+                          title="نتیجه نهایی از فید ESPN"
+                        >
+                          {s.homeScore}-{s.awayScore}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500">از فید ESPN در دسترس نیست</span>
+                      )}
+                    </div>
                   </div>
 
                   {s.legs && s.legs.length > 0 && (
@@ -678,7 +1056,7 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
         </div>
       )}
 
-      {/* ── 4. Shadow Ledger Tracker ─────────────────────────────────────── */}
+      {/* ── 5. Shadow Ledger Tracker (v3.1) ──────────────────────────────── */}
       <Card className="glass border-red-500/20 p-4" data-testid="shadow-tracker">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-sm font-bold text-red-300">
@@ -690,32 +1068,60 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
           </span>
         </div>
 
-        {/* v2.7 summary cards — Saved Losses / Missed Wins / Net Impact */}
-        <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {/* v3.1 summary — Shadow Win-Rate Lift headline + saved/missed economics */}
+        <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3" data-testid="shadow-lift">
+            <div className="text-[10px] text-muted-foreground">ارتفاع وین‌ریت سایه (Shadow Win-Rate Lift)</div>
+            {hasLift ? (
+              <>
+                <AnimatedNumber
+                  value={shadow.shadowLiftPct}
+                  decimals={1}
+                  prefix={shadow.shadowLiftPct >= 0 ? "+" : ""}
+                  suffix="pp"
+                  className="mt-1 block text-xl font-extrabold neon-cyan"
+                />
+                <div className="num mt-1 text-[10px] text-slate-400" dir="ltr">
+                  with-veto {fmtPct(shadow.winRateWithVeto)} · without-veto {fmtPct(shadow.winRateWithoutVeto)}
+                </div>
+              </>
+            ) : (
+              <div className="mt-2 text-[11px] text-muted-foreground">بدون داده</div>
+            )}
+          </div>
           <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
-            <div className="text-[10px] text-muted-foreground">تعداد Saved Losses (وتوی نجات‌دهنده)</div>
+            <div className="text-[10px] text-muted-foreground">Saved Losses — وتوی نجات‌دهنده</div>
             <AnimatedNumber
-              value={m.savedCount}
+              value={shadow.savedLossCount}
               decimals={0}
               className="mt-1 block text-xl font-extrabold neon-emerald"
             />
+            <div className="num mt-1 text-[10px] text-emerald-200/80" dir="ltr">
+              {fmtUnits(shadow.savedLossUnits, 1)}u سرمایه نجات‌یافته
+            </div>
           </div>
           <div className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-3">
-            <div className="text-[10px] text-muted-foreground">تعداد Missed Wins (فرصت ازدست‌رفته)</div>
+            <div className="text-[10px] text-muted-foreground">Missed Wins — فرصت ازدست‌رفته</div>
             <AnimatedNumber
-              value={m.missedWinCount}
+              value={shadow.missedWinCount}
               decimals={0}
               className="mt-1 block text-xl font-extrabold text-amber-300"
             />
+            <div className="num mt-1 text-[10px] text-amber-200/80" dir="ltr">
+              {fmtUnits(shadow.missedWinUnits, 1)}u سود ازدست‌رفته
+            </div>
           </div>
-          <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-3">
+          <div className="rounded-xl border border-slate-700/40 bg-secondary/30 p-3">
             <div className="text-[10px] text-muted-foreground">برآیند خالص وتو (Net Shadow Impact)</div>
             <AnimatedNumber
-              value={m.savedCapital}
+              value={netShadowImpact}
               decimals={1}
               suffix="u"
-              className={cn("mt-1 block text-xl font-extrabold", m.savedCapital >= 0 ? "neon-cyan" : "text-red-300")}
+              className={cn("mt-1 block text-xl font-extrabold", netShadowImpact >= 0 ? "neon-cyan" : "text-red-300")}
             />
+            <div className="mt-1 text-[10px] text-slate-400">
+              نجات منهای فرصت ازدست‌رفته
+            </div>
           </div>
         </div>
 
@@ -724,21 +1130,25 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
             کارت وتویی در دفتر سایه ثبت نشده است — هر سیگنالی که لایه RCA رد می‌کند، با دلیل کامل و نتیجه واقعی همین‌جا آرشیو می‌شود.
           </div>
         ) : (
-          <div className="scroll-slim max-h-96 overflow-auto overscroll-contain rounded-xl border border-slate-800/80">
-            <table className="w-full min-w-[860px] border-collapse text-right text-[11px]">
+          <div className="scroll-slim max-h-96 overflow-y-auto overscroll-contain rounded-xl border border-slate-800/80">
+            <table className="w-full border-collapse text-right text-[11px]">
               <thead>
                 <tr>
                   {[
-                    "مسابقه و لیگ + تاریخ شروع",
-                    "انتخاب موتور پیش از وتو",
-                    "دلیل وتو",
-                    "نتیجه واقعی بازی",
-                    "برچسب نتیجه وتو",
-                    "زمان تعیین تکلیف",
-                  ].map((h) => (
+                    ["مسابقه و لیگ + تاریخ شروع", ""],
+                    ["انتخاب موتور پیش از وتو", ""],
+                    ["دلیل وتو", "hidden lg:table-cell"],
+                    ["نتیجه واقعی بازی", ""],
+                    ["برچسب نتیجه وتو", ""],
+                    ["واحدها", ""],
+                    ["زمان تعیین تکلیف", "hidden xl:table-cell"],
+                  ].map(([h, hideCls]) => (
                     <th
                       key={h}
-                      className="sticky top-0 z-10 whitespace-nowrap border-b border-slate-800 bg-[#0C1220] px-3 py-2 text-[10px] font-semibold text-muted-foreground"
+                      className={cn(
+                        "sticky top-0 z-10 whitespace-nowrap border-b border-slate-800 bg-[#0C1220] px-3 py-2 text-[10px] font-semibold text-muted-foreground",
+                        hideCls,
+                      )}
                     >
                       {h}
                     </th>
@@ -747,7 +1157,9 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
               </thead>
               <tbody>
                 {state.shadowVetoes.map((v) => {
-                  const badge = verdictBadge(v);
+                  const tag = verdictTag(v);
+                  const units = signedUnits(v);
+                  const sharp = isSharpDivergence(v.reason);
                   // v2.7.1 §1 — the tracker renders the engine's PRE-VETO pick
                   // with the official bookmaker name and the REAL team names
                   // (from the representative fixture), odds and reference stake.
@@ -756,10 +1168,25 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                     : ["Home", "Away"];
                   const betline = formatStoredMarketLabel(v.marketLabel, v.selection, repHome || "Home", repAway || "Away");
                   return (
-                    <tr key={v.id} className="transition-colors hover:bg-secondary/40">
+                    <tr
+                      key={v.id}
+                      className={cn("transition-colors hover:bg-secondary/40", sharp && "bg-cyan-500/[0.06]")}
+                    >
                       <td className="max-w-[220px] px-3 py-2">
-                        <div className="truncate font-bold text-slate-200" title={v.repMatch ?? v.signalRef}>
-                          {v.repMatch ?? v.signalRef}
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-bold text-slate-200" title={v.repMatch ?? v.signalRef}>
+                            {v.repMatch ?? v.signalRef}
+                          </span>
+                          {/* v3.1 — Push-Shield Engine provenance badge */}
+                          {v.category === "SHIELD_ENGINE" && (
+                            <span
+                              className="shrink-0 rounded border border-violet-400/40 bg-violet-400/10 px-1 py-0.5 text-[9px] font-bold text-violet-300"
+                              dir="ltr"
+                              title="صادرشده توسط موتور سپر v3.1"
+                            >
+                              v3.1
+                            </span>
+                          )}
                         </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] text-slate-400">
                           <span className="truncate">{v.league ?? "—"}</span>
@@ -775,8 +1202,17 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                           {v.savedUnits != null && v.savedUnits > 0 ? v.savedUnits.toFixed(0) : "—"}u
                         </div>
                       </td>
-                      <td className="max-w-[230px] truncate px-2 py-2 text-slate-300" title={v.reason}>
-                        {v.reason}
+                      <td className="hidden max-w-[230px] px-2 py-2 lg:table-cell" title={v.reason}>
+                        <div className={cn("truncate", sharp ? "text-cyan-200" : "text-slate-300")}>{v.reason}</div>
+                        {/* v3.1 — sharp-divergence veto tag (tactical vetoes stay untagged) */}
+                        {sharp && (
+                          <span
+                            className="mt-0.5 inline-block rounded border border-cyan-400/40 bg-cyan-400/10 px-1 py-0.5 text-[9px] font-bold tracking-wide text-cyan-300"
+                            dir="ltr"
+                          >
+                            SHARP DIVERGENCE
+                          </span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-2 py-2">
                         {v.ftScore ? (
@@ -794,12 +1230,17 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                       </td>
                       <td className="px-2 py-2">
                         <span
-                          className={cn("inline-block whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] font-bold", badge.cls)}
+                          className={cn("inline-block whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] font-bold", tag.cls)}
                         >
-                          {badge.text}
+                          {tag.text}
                         </span>
                       </td>
-                      <td className="num whitespace-nowrap px-2 py-2 text-slate-400" dir="ltr">{formatSafeDateTime(v.decidedAt)}</td>
+                      <td className="num whitespace-nowrap px-2 py-2 font-bold" dir="ltr" title={units.title}>
+                        <span className={units.cls}>{units.text}</span>
+                      </td>
+                      <td className="num hidden whitespace-nowrap px-2 py-2 text-slate-400 xl:table-cell" dir="ltr">
+                        {formatSafeDateTime(v.decidedAt)}
+                      </td>
                     </tr>
                   );
                 })}

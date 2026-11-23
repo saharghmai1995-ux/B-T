@@ -1,20 +1,23 @@
 "use client";
 
 /**
- * View 1 — OverviewView: VIP 3D neon glass executive dashboard (v2.0 rebuild).
+ * View 1 — OverviewView: v3.1 "Parallel Superagent" executive dashboard.
  *
- * Modules:
- *  1) Glassy 3D KPI bar — 5 spotlight glass tiles (bankroll, ROI, winRate, maxDD, shadow-vault savings)
- *  2) 3D Gyroscope winrate gauge — hand-built SVG, three concentric neon rings calibrated
- *     by football/tennis/overall winRate, perpetually rotating (.gyro-ring*)
- *  3) Glowing equity area curve (football/tennis/total) + daily PnL bars with range filter
- *  4) Live radar sweep + holographic Pick-of-the-Day tilt card
- *  5) Recent settlements neon strip
+ * Modules (v3.1 rebuild):
+ *  1) HeroQuantum3D — R3F quantum superagent core, wrapped in ErrorBoundary3D
+ *  2) 4 SuperAgent KPI cards — Pure Win Rate / No-Loss Shield Rate /
+ *     Calibration (Brier+ECE) / Win Streak + Shadow Lift
+ *  3) Sport split panel — Football / Tennis WON · VOID(=PUSH) · LOST + rates
+ *  4) Pick of the Day (سیگنال طلایی) — STRICTLY TODAY (Asia/Tehran),
+ *     SHIELD-line preferred, best by (noLossProb ?? modelProb)
+ *  5) Equity curve + daily PnL Recharts (kept from v2.x)
+ *  6) Interactive recent settlements — expandable SuperAgent consensus audit
  *
- * Zero UI math: every number comes from computeMasterMetrics() on the server.
+ * Zero UI math beyond presentation fallbacks: every headline number comes from
+ * the server payload; `agentLab` is optional and every field is guarded.
  */
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -31,33 +34,34 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  KpiTile,
   AnimatedNumber,
   TeamAvatar,
   PriceTag,
   HashChip,
   EmptyState,
+  TierBadge,
+  ShieldBadge,
+  NoLossChip,
+  SportIcon,
 } from "@/components/shared/primitives";
 import { useAppStore } from "@/lib/store";
 import { fmtUnits, fmtDateTimeFa, lineLabel, statusColor } from "@/lib/api-types";
-import { isSameTehranDay, formatSafeDateTime } from "@/lib/format";
-import { resolveBookmakerAliases } from "@/core/bookmakers/market-aliases";
-import type { AppStatePayload, AppSignal } from "@/lib/api-types";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import { cn } from "@/lib/utils";
+import ErrorBoundary3D from "@/components/three/ErrorBoundary3D";
+import HeroQuantum3D from "@/components/three/HeroQuantum3D";
+import type { AppStatePayload } from "@/lib/api-types";
 import {
-  Wallet,
-  Percent,
-  Activity,
-  TrendingDown,
+  Target,
   ShieldCheck,
   Gauge,
-  Radar as RadarIcon,
+  Flame,
   Satellite,
   Crown,
   ArrowLeft,
   Trophy,
   Zap,
+  ChevronDown,
 } from "lucide-react";
 
 /* ============================== shared helpers ============================== */
@@ -85,7 +89,27 @@ const statOf = (rec: Record<string, SportStat>, key: string): SportStat => rec[k
 /** Signed unit string: +12.5 / -3.0 (fmtUnits keeps the minus). */
 const signed = (n: number, d = 1): string => `${n >= 0 ? "+" : ""}${fmtUnits(n, d)}`;
 
-const clampPct = (n: number): number => (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
+/**
+ * v3.1 — Tehran day-key, reimplemented inline (client-safe, no server imports):
+ * the en-CA "YYYY-MM-DD" projection of an instant in Asia/Tehran. Both sides of
+ * the Pick-of-the-Day comparison use this exact formatter so every browser
+ * engine agrees on what "today" means for the golden card.
+ */
+function tehranDayKey(input: string | number | Date | null | undefined): string | null {
+  if (!input) return null;
+  const d = input instanceof Date ? input : new Date(input);
+  if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2020) return null;
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tehran",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return null;
+  }
+}
 
 function filterSeries<T extends { date: string }>(rows: T[], range: RangeKey): T[] {
   if (range === "all" || rows.length === 0) return rows;
@@ -95,173 +119,62 @@ function filterSeries<T extends { date: string }>(rows: T[], range: RangeKey): T
   return filtered.length > 0 ? filtered : rows.slice(-days);
 }
 
-function pickBestToday(open: AppSignal[]): AppSignal | null {
-  // v2.7 — strictly TODAY (Asia/Tehran) on the kickoff clock. No dayKey
-  // fallback, no "closest signal" leaking in: when nothing starts today the
-  // golden card honestly shows its empty state.
-  const todays = open.filter((s) => isSameTehranDay(s.startTime));
-  if (todays.length === 0) return null;
-  return todays.reduce((best, s) => (s.evPct > best.evPct ? s : best), todays[0]);
-}
+/* ============================== v3.1 KPI card ============================== */
 
-/* ============================== SVG sub-components ============================== */
+const KPI_TONE = {
+  emerald: { text: "text-emerald-300", ring: "border-emerald-500/25" },
+  cyan: { text: "text-cyan-300", ring: "border-cyan-500/25" },
+  violet: { text: "text-violet-300", ring: "border-violet-500/25" },
+  gold: { text: "text-amber-300", ring: "border-amber-500/25" },
+} as const;
 
-/**
- * One gyroscope ring: a dashed neon arc whose length encodes the winRate,
- * plus a comet dot at the arc tip. The whole <g> spins forever (CSS class).
- */
-function GyroRing({
-  radius,
-  color,
-  pct,
-  spin,
-  width = 9,
+/** v3.1 SuperAgent KPI card — AnimatedNumber headline with a "—" fallback. */
+function V31Kpi({
+  label,
+  value,
+  decimals = 0,
+  suffix = "",
+  sub,
+  tone,
+  icon,
+  dash = false,
 }: {
-  radius: number;
-  color: string;
-  pct: number;
-  spin: string;
-  width?: number;
+  label: string;
+  value?: number;
+  decimals?: number;
+  suffix?: string;
+  sub?: string;
+  tone: keyof typeof KPI_TONE;
+  icon?: React.ReactNode;
+  dash?: boolean;
 }) {
-  const p = clampPct(pct);
-  const circ = 2 * Math.PI * radius;
-  const tip = ((-90 + p * 3.6) * Math.PI) / 180;
+  const t = KPI_TONE[tone];
   return (
-    <g className={spin}>
-      <circle
-        cx={120}
-        cy={120}
-        r={radius}
-        fill="none"
-        stroke={color}
-        strokeWidth={width}
-        strokeLinecap="round"
-        strokeDasharray={circ}
-        strokeDashoffset={circ * (1 - p / 100)}
-        transform="rotate(-90 120 120)"
-        opacity={0.92}
-        style={{ filter: `drop-shadow(0 0 6px ${color})` }}
-      />
-      <circle
-        cx={120 + radius * Math.cos(tip)}
-        cy={120 + radius * Math.sin(tip)}
-        r={4}
-        fill={color}
-        style={{ filter: `drop-shadow(0 0 8px ${color})` }}
-      />
-    </g>
-  );
-}
-
-/** Live market-scanner radar: conic sweep + pulsing blips from the top open signals. */
-function RadarPanel({ open }: { open: AppSignal[] }) {
-  const blips = open.slice(0, 4).map((s, i) => {
-    const angle = (i * 74 + 14) % 360;
-    const radius = 36 + ((i * 27) % 64);
-    const t = ((angle - 90) * Math.PI) / 180;
-    return {
-      id: s.id,
-      x: 120 + radius * Math.cos(t),
-      y: 120 + radius * Math.sin(t),
-      color: s.sport === "tennis" ? "#A78BFA" : "#34D399",
-      delay: `${(i * 0.55).toFixed(2)}s`,
-    };
-  });
-  const scanList = open.slice(0, 3);
-
-  return (
-    <div>
-      <svg viewBox="0 0 240 240" className="mx-auto w-full max-w-[240px]" role="img" aria-label="رادار اسکنر بازار">
-        <defs>
-          <radialGradient id="radarBg" gradientUnits="userSpaceOnUse" cx={120} cy={120} r={112}>
-            <stop offset="0%" stopColor="#07242E" stopOpacity={0.95} />
-            <stop offset="100%" stopColor="#050810" stopOpacity={0.95} />
-          </radialGradient>
-          <radialGradient id="sweepGrad" gradientUnits="userSpaceOnUse" cx={120} cy={120} r={112}>
-            <stop offset="0%" stopColor="#00E5FF" stopOpacity={0.5} />
-            <stop offset="55%" stopColor="#00E5FF" stopOpacity={0.12} />
-            <stop offset="100%" stopColor="#00E5FF" stopOpacity={0} />
-          </radialGradient>
-        </defs>
-
-        <circle cx={120} cy={120} r={112} fill="url(#radarBg)" stroke="#22D3EE" strokeOpacity={0.4} />
-        {[28, 56, 84].map((r) => (
-          <circle key={r} cx={120} cy={120} r={r} fill="none" stroke="#1B2537" strokeWidth={1} />
-        ))}
-        <circle cx={120} cy={120} r={84} fill="none" stroke="#22D3EE" strokeWidth={1} strokeOpacity={0.25} />
-        <line x1={8} y1={120} x2={232} y2={120} stroke="#1B2537" />
-        <line x1={120} y1={8} x2={120} y2={232} stroke="#1B2537" />
-        <line x1={40.8} y1={40.8} x2={199.2} y2={199.2} stroke="#1B2537" strokeOpacity={0.6} />
-        <line x1={199.2} y1={40.8} x2={40.8} y2={199.2} stroke="#1B2537" strokeOpacity={0.6} />
-
-        {/* rotating conic beam */}
-        <g className="radar-sweep">
-          <path d="M 120 120 L 232 120 A 112 112 0 0 0 184.2 28.3 Z" fill="url(#sweepGrad)" />
-          <line x1={120} y1={120} x2={232} y2={120} stroke="#22D3EE" strokeWidth={1.5} strokeOpacity={0.8} />
-        </g>
-
-        {/* signal blips (football emerald / tennis violet) */}
-        {blips.map((b) => (
-          <g key={b.id}>
-            <circle cx={b.x} cy={b.y} r={7} fill={b.color} opacity={0.18} />
-            <circle
-              className="radar-blip"
-              cx={b.x}
-              cy={b.y}
-              r={4}
-              fill={b.color}
-              style={{ animationDelay: b.delay, filter: `drop-shadow(0 0 6px ${b.color})` }}
-            />
-          </g>
-        ))}
-        <circle cx={120} cy={120} r={3} fill="#22D3EE" />
-      </svg>
-
-      {scanList.length > 0 && (
-        <div className="mt-2 space-y-1.5">
-          <div className="text-[10px] text-muted-foreground">اهداف در حال پایش:</div>
-          {scanList.map((s) => (
-            <div
-              key={s.id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-slate-800/60 bg-secondary/40 px-2.5 py-1.5"
-            >
-              <span className="truncate text-[11px]" dir="auto">
-                {s.matchInfo}
-              </span>
-              <span className="num shrink-0 text-[10px] font-bold text-amber-300">+EV {fmtUnits(s.evPct, 1)}%</span>
-            </div>
-          ))}
+    <div className={cn("glass glass-hover spotlight-card spotlight-border p-4", t.ring)} data-testid="overview-kpi">
+      <div className="relative z-10">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted-foreground">{label}</span>
+          {icon}
         </div>
-      )}
-    </div>
-  );
-}
-
-/** Perspective wrapper + mouse-reactive holographic tilt (max ±10deg). */
-function TiltShell({ children, className }: { children: ReactNode; className?: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width - 0.5;
-    const py = (e.clientY - r.top) / r.height - 0.5;
-    const ry = Math.max(-10, Math.min(10, px * 24));
-    const rx = Math.max(-10, Math.min(10, -py * 24));
-    el.style.transform = `rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg)`;
-  };
-  const onLeave = () => {
-    const el = ref.current;
-    if (el) el.style.transform = "rotateX(0deg) rotateY(0deg)";
-  };
-  return (
-    <div className="stage-3d h-full">
-      <div ref={ref} onMouseMove={onMove} onMouseLeave={onLeave} className={cn("tilt-3d h-full", className)}>
-        {children}
+        {dash ? (
+          <span className={cn("num mt-2 block text-2xl font-extrabold tracking-tight", t.text)} dir="ltr">
+            —
+          </span>
+        ) : (
+          <AnimatedNumber
+            value={value ?? 0}
+            decimals={decimals}
+            suffix={suffix}
+            className={cn("mt-2 block text-2xl font-extrabold tracking-tight", t.text)}
+          />
+        )}
+        {sub && <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{sub}</div>}
       </div>
     </div>
   );
 }
+
+/* ============================== small pieces ============================== */
 
 function TeamBlock({ name, logo, role }: { name: string; logo: string | null; role: string }) {
   return (
@@ -277,25 +190,113 @@ function TeamBlock({ name, logo, role }: { name: string; logo: string | null; ro
   );
 }
 
+/** One sport glass card of the split panel: WON / VOID(=PUSH) / LOST + rates. */
+function SportSplitCard({ sport, label, stat }: { sport: string; label: string; stat: SportStat }) {
+  // voids (=PUSH) are not stored per sport: settled − wins − losses
+  const voids = Math.max(0, stat.settled - stat.wins - stat.losses);
+  const winRate = stat.settled > 0 ? stat.winRate : 0;
+  const noLossRate = stat.settled > 0 ? ((stat.wins + voids) / stat.settled) * 100 : 0;
+
+  return (
+    <Card className="glass glass-hover gap-3 p-4" data-testid={`overview-sport-${sport}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <SportIcon sport={sport} className="text-base" />
+          <h3 className="text-sm font-bold">{label}</h3>
+        </div>
+        <span className="num rounded-md border border-slate-800 bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span dir="ltr">{stat.settled}</span> تسویه‌شده
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-2 py-2 text-center">
+          <div className="text-[9px] text-muted-foreground">برد (WON)</div>
+          <div className="num mt-0.5 text-base font-extrabold text-emerald-300" dir="ltr">
+            {stat.wins}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-600/40 bg-slate-500/5 px-2 py-2 text-center">
+          <div className="text-[9px] text-muted-foreground">پوش (VOID)</div>
+          <div className="num mt-0.5 text-base font-extrabold text-slate-300" dir="ltr">
+            {voids}
+          </div>
+        </div>
+        <div className="rounded-xl border border-red-500/25 bg-red-500/5 px-2 py-2 text-center">
+          <div className="text-[9px] text-muted-foreground">باخت (LOST)</div>
+          <div className="num mt-0.5 text-base font-extrabold text-red-300" dir="ltr">
+            {stat.losses}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 border-t border-slate-800/70 pt-3">
+        <div className="text-center">
+          <div className="text-[9px] text-muted-foreground">وین‌ریت</div>
+          <AnimatedNumber value={winRate} decimals={1} suffix="%" className="num text-lg font-extrabold text-emerald-300" />
+        </div>
+        <div className="text-center">
+          <div className="text-[9px] text-muted-foreground">نرخ بدون‌باخت</div>
+          <AnimatedNumber value={noLossRate} decimals={1} suffix="%" className="num text-lg font-extrabold text-cyan-300" />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** Settlement status → Persian label + badge classes (WON / PUSH(VOID) / LOST). */
+function settlementStatus(s: string): { label: string; cls: string } {
+  if (s === "WON") return { label: "برد (WON)", cls: "border border-neon-emerald bg-emerald-500/15 text-emerald-300" };
+  if (s === "VOID") return { label: "پوش (VOID)", cls: "border border-slate-600/60 bg-slate-500/15 text-slate-300" };
+  if (s === "LOST") return { label: "باخت (LOST)", cls: "border border-red-500/40 bg-red-500/15 text-red-300" };
+  return { label: s, cls: "border border-amber-400/40 bg-amber-400/15 text-amber-300" };
+}
+
 /* ============================== main view ============================== */
 
 export default function OverviewView({ state }: { state: AppStatePayload }) {
   const m = state.metrics;
+  const lab = state.agentLab;
   const setView = useAppStore((s) => s.setView);
   const setSportFilter = useAppStore((s) => s.setSportFilter);
   const [range, setRange] = useState<RangeKey>("30");
-  // v2.7 — interactive settlement rows: clicking a match reveals the full
-  // audit drawer (bookmaker paths, odds, stake, FT, net P/L, SHA-256).
+  // v3.1 — interactive settlement rows: clicking reveals the SuperAgent
+  // consensus audit panel (Quant + Coach views, sharp sensor, FT, SHA-256).
   const [expandedSettlements, setExpandedSettlements] = useState<Set<string>>(new Set());
 
   const fb = statOf(m.sportStats, "football");
   const tn = statOf(m.sportStats, "tennis");
 
+  /* ---- v3.1 SuperAgent KPI values (every agentLab field optional-guarded) ---- */
+  const pureWinRate = lab ? lab.pureWinRate * 100 : m.winRate;
+  const settledAll = m.wins + m.losses + m.voids;
+  const noLossRate = lab
+    ? lab.noLossRate * 100
+    : settledAll > 0
+      ? ((m.wins + m.voids) / settledAll) * 100
+      : m.winRate;
+
   const curve = useMemo(() => filterSeries(m.equityCurve, range), [m.equityCurve, range]);
   const pnl = useMemo(() => filterSeries(m.dailyPnl, range), [m.dailyPnl, range]);
 
-  const pick = pickBestToday(state.openSignals);
-  const recent = state.settledSignals.slice(0, 6);
+  /* ---- Pick of the Day: STRICTLY today in Asia/Tehran (inline day-key) ---- */
+  const pick = useMemo(() => {
+    const todayKey = tehranDayKey(new Date());
+    if (!todayKey) return null;
+    const todays = state.openSignals.filter(
+      (s) => s.dayKey === todayKey || tehranDayKey(s.startTime) === todayKey,
+    );
+    if (todays.length === 0) return null;
+    // SHIELD first, then SINGLE_EV; best score = noLossProb ?? modelProb
+    const rank = (line: string) => (line === "SHIELD" ? 0 : line === "SINGLE_EV" ? 1 : 2);
+    return [...todays].sort((a, b) => {
+      const r = rank(a.line) - rank(b.line);
+      if (r !== 0) return r;
+      return (b.noLossProb ?? b.modelProb) - (a.noLossProb ?? a.modelProb);
+    })[0];
+  }, [state.openSignals]);
+
+  const recent = state.settledSignals.slice(0, 8);
 
   const openPickSport = (sport: string) => {
     setSportFilter(sport === "tennis" ? "tennis" : "football");
@@ -304,154 +305,180 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
 
   return (
     <div className="space-y-4" data-testid="overview-view">
-      {/* ============ Module 1 — Glassy 3D KPI bar ============ */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5" data-testid="overview-kpis">
-        <KpiTile
-          label="موجودی بانک (پایه ۱٬۰۰۰u)"
-          value={m.bankroll}
-          decimals={1}
-          suffix="u"
-          tone="emerald"
-          sub={`شروع: ${fmtUnits(m.startingBank, 0)}u · سود خالص: ${signed(m.totalProfit)}u`}
-          icon={<Wallet className="size-4 text-emerald-400" />}
-        />
-        <KpiTile
-          label="بازده واقعی (ROI%)"
-          value={m.roi}
+      {/* ============ Module 1 — Quantum SuperAgent 3D hero ============ */}
+      <section aria-label="موتور سوپرایجنت موازی" className="relative">
+        <ErrorBoundary3D>
+          <HeroQuantum3D />
+        </ErrorBoundary3D>
+      </section>
+
+      {/* ============ Module 2 — v3.1 SuperAgent KPI bar (4 cards) ============ */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" data-testid="overview-kpis">
+        <V31Kpi
+          label="وین‌ریت خالص سوپرایجنت"
+          value={pureWinRate}
           decimals={1}
           suffix="%"
-          tone="gold"
-          sub={`تسویه‌شده: ${m.wins + m.losses} سیگنال · سود تجمعی: ${signed(m.totalProfit)}u`}
-          icon={<Percent className="size-4 text-amber-300" />}
+          tone="emerald"
+          icon={<Target className="size-4 text-emerald-400" />}
+          sub={lab ? `${lab.decidedCount} تصمیم قطعی — پوش‌ها حذف شده` : `${m.wins + m.losses} تسویه قطعی (بدون پوش)`}
         />
-        <KpiTile
-          label="وین‌ریت هسته (فوتبال+تنیس)"
-          value={m.winRate}
+        <V31Kpi
+          label="نرخ بدون‌باخت (سپر)"
+          value={noLossRate}
           decimals={1}
           suffix="%"
           tone="cyan"
-          sub={`${m.wins} برد · ${m.losses} باخت · ${m.voids} ابطال`}
-          icon={<Activity className="size-4 text-cyan-300" />}
+          icon={<ShieldCheck className="size-4 text-cyan-300" />}
+          sub="برد + پوش — سپر سربه‌سر Push-Shield"
         />
-        <KpiTile
-          label="حداکثر افت سرمایه"
-          value={m.maxDrawdown}
-          decimals={1}
-          suffix="u"
-          tone={m.maxDrawdown > 150 ? "red" : "cyan"}
-          sub={`سیگنال باز: ${m.openCount} · استیک در ریسک: ${fmtUnits(m.openStake, 0)}u`}
-          icon={<TrendingDown className={cn("size-4", m.maxDrawdown > 150 ? "text-red-400" : "text-slate-300")} />}
-        />
-        <KpiTile
-          label="سرمایه نجات‌یافته در دفتر سایه"
-          value={m.savedCapital}
-          decimals={1}
-          suffix="u"
-          tone="violet"
-          sub={`${m.savedCount} وتوی موفق دفتر سایه`}
-          icon={<ShieldCheck className="size-4 text-violet-300" />}
-        />
+        {lab ? (
+          <V31Kpi
+            label="دقت کالیبراسیون (Brier)"
+            value={lab.brier}
+            decimals={3}
+            tone="violet"
+            icon={<Gauge className="size-4 text-violet-300" />}
+            sub={`ECE ${(lab.ece * 100).toFixed(1)}%`}
+          />
+        ) : (
+          <V31Kpi
+            label="دقت کالیبراسیون (Brier)"
+            tone="violet"
+            icon={<Gauge className="size-4 text-violet-300" />}
+            sub="کالیبراسیون هنوز اجرا نشده"
+            dash
+          />
+        )}
+        {lab ? (
+          <V31Kpi
+            label="استریک برد + لیفت سایه"
+            value={lab.winStreak}
+            decimals={0}
+            tone="gold"
+            icon={<Flame className="size-4 text-amber-300" />}
+            sub={`Shadow Lift ${lab.shadow.shadowLiftPct.toFixed(1)}pp`}
+          />
+        ) : (
+          <V31Kpi
+            label="استریک برد + لیفت سایه"
+            tone="gold"
+            icon={<Flame className="size-4 text-amber-300" />}
+            sub="در انتظار موتور سوپرایجنت"
+            dash
+          />
+        )}
       </div>
 
-      {/* ============ Module 2 — 3D Gyroscope winrate gauge ============ */}
-      <Card className="glass glass-hover gap-4 p-4" data-testid="overview-gyro">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Gauge className="size-4 text-cyan-300" />
-            <h2 className="text-sm font-bold">گیج ژیروسکوپی وین‌ریت (۳D)</h2>
-          </div>
-          <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            <span className="pulse-dot size-1.5 rounded-full bg-cyan-400 text-cyan-400" />
-            حلقه‌ها با وین‌ریت هر ورزش کالیبره شده‌اند
-          </span>
-        </div>
+      {/* ============ Module 3 — Sport split panel ============ */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2" data-testid="overview-sport-split">
+        <SportSplitCard sport="football" label="فوتبال" stat={fb} />
+        <SportSplitCard sport="tennis" label="تنیس" stat={tn} />
+      </div>
 
-        <div className="grid items-center gap-4 md:grid-cols-[minmax(0,240px)_minmax(0,1fr)]">
-          <div className="stage-3d mx-auto w-full max-w-[240px]">
-            <div className="relative transition-transform duration-300" style={{ transform: "rotateX(16deg)" }}>
-              <svg viewBox="0 0 240 240" className="w-full" role="img" aria-label="گیج وین‌ریت سه‌بعدی">
-                {/* static tracks */}
-                {[100, 82, 64].map((r) => (
-                  <circle key={`track-${r}`} cx={120} cy={120} r={r} fill="none" stroke="#1B2537" strokeWidth={9} opacity={0.55} />
-                ))}
-                <circle cx={120} cy={120} r={46} fill="none" stroke="#16203A" strokeWidth={1} strokeDasharray="4 6" opacity={0.8} />
+      {/* ============ Module 4 — Pick of the Day (سیگنال طلایی امروز) ============ */}
+      <div data-testid="overview-pick">
+        {pick ? (
+          <Card className="glass glass-hover flex flex-col gap-3 p-4 md:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Crown className="size-4 text-amber-300" />
+                <h2 className="text-sm font-bold text-amber-200">سیگنال طلایی امروز — Pick of the Day</h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <TierBadge tier={pick.tier} />
+                <ShieldBadge shieldType={pick.shieldType} />
+              </div>
+            </div>
 
-                {/* rotating calibrated rings: overall cyan / football emerald / tennis violet */}
-                <GyroRing radius={100} color="#22D3EE" pct={m.winRate} spin="gyro-ring" />
-                <GyroRing radius={82} color="#34D399" pct={fb.winRate} spin="gyro-ring-rev" />
-                <GyroRing radius={64} color="#A78BFA" pct={tn.winRate} spin="gyro-ring-fast" />
-
-                <circle cx={120} cy={120} r={3} fill="#22D3EE" style={{ filter: "drop-shadow(0 0 6px rgba(0,229,255,0.9))" }} />
-              </svg>
-              <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <div className="text-center">
-                  <AnimatedNumber
-                    value={m.winRate}
-                    decimals={1}
-                    suffix="%"
-                    className="neon-cyan block text-[34px] font-black leading-none tracking-tight"
-                  />
-                  <div className="mt-1.5 text-[10px] text-muted-foreground">وین‌ریت کل هسته</div>
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/70 bg-secondary/40 px-3 py-2.5">
+              <TeamBlock name={pick.homeName} logo={pick.homeLogo} role="میزبان / بازیکن ۱" />
+              <div className="shrink-0 text-center">
+                <div className="num text-[10px] font-black text-cyan-300" dir="ltr">
+                  VS
                 </div>
+                <SportIcon sport={pick.sport} className="text-base" />
+              </div>
+              <TeamBlock name={pick.awayName} logo={pick.awayLogo} role="میهمان / بازیکن ۲" />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+              <span className="rounded-md border border-slate-800 bg-secondary px-1.5 py-0.5" dir="auto">
+                {pick.league}
+              </span>
+              <span className="num inline-block tabular-nums" dir="ltr">
+                {fmtDateTimeFa(pick.startTime)}
+              </span>
+              <span className="rounded-md bg-secondary px-1.5 py-0.5">{lineLabel(pick.line)}</span>
+              <NoLossChip value={pick.noLossProb} />
+            </div>
+
+            <div
+              dir="ltr"
+              className="rounded-xl border-neon-gold bg-amber-400/10 px-3 py-2.5 text-center shadow-[0_0_18px_rgba(245,158,11,0.15)]"
+            >
+              <div className="num text-sm font-bold tracking-tight text-amber-300 md:text-base">
+                {officialBetLine(pick.marketKey, pick.selection, pick.marketLabel, pick.homeName, pick.awayName)}
               </div>
             </div>
+            <p className="-mt-1 text-center text-[11px] leading-5 text-muted-foreground">{marketFa(pick.marketKey)}</p>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <PriceTag price={pick.price} className="px-3 py-1.5 text-lg" />
+                <Badge variant="outline" className="border-neon-emerald bg-emerald-500/10 text-xs font-bold text-emerald-300">
+                  +EV {fmtUnits(pick.evPct, 1)}%
+                </Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-lg border border-violet-400/30 bg-violet-500/10 px-2.5 py-1 text-[11px] text-violet-300">
+                  اجماع سوپرایجنت:{" "}
+                  <span className="num font-bold" dir="ltr">
+                    {pick.consensusPct != null ? `${pick.consensusPct}%` : "—"}
+                  </span>
+                </span>
+                <span className="num rounded-lg border border-slate-700 bg-secondary px-2.5 py-1 text-[11px]">
+                  استیک <span dir="ltr">{fmtUnits(pick.stake, 0)}u</span> ·{" "}
+                  {pick.stakeMode === "KELLY_025" ? "Kelly" : "Flat"}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-2.5">
+              <HashChip hash={pick.shaHash} />
+              <span className="text-[10px] text-muted-foreground">
+                {pick.sport === "tennis" ? "تسویه: تکمیل کامل مسابقه (Retirement = ابطال)" : "تسویه: ۹۰ دقیقه زمان قانونی"}
+              </span>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-auto border-neon-gold bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 hover:text-amber-200"
+              onClick={() => openPickSport(pick.sport)}
+            >
+              مشاهده در مرکز پیش‌بینی
+              <ArrowLeft className="size-3.5" />
+            </Button>
+          </Card>
+        ) : (
+          <div
+            className="rounded-2xl border border-dashed border-slate-700/60 bg-transparent p-6 text-center md:p-8"
+            data-testid="overview-pick-empty"
+          >
+            <Satellite className="mx-auto size-6 text-slate-500" />
+            <p className="mt-2 text-sm font-semibold text-slate-300">
+              امروز مسابقه‌ای برای انتخاب طلایی وجود ندارد
+            </p>
+            <p className="mx-auto mt-1 max-w-md text-[11px] leading-5 text-muted-foreground">
+              کارت طلایی فقط سیگنال‌های امروز تهران را نشان می‌دهد — نزدیک‌ترین
+              سیگنال‌های +EV در مرکز پیش‌بینی در دسترس است.
+            </p>
           </div>
+        )}
+      </div>
 
-          <div className="space-y-2">
-            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <span className="pulse-dot size-2 rounded-full bg-emerald-400 text-emerald-400" />
-                  فوتبال
-                </span>
-                <AnimatedNumber value={fb.winRate} decimals={1} suffix="%" className="num text-sm font-bold text-emerald-300" />
-              </div>
-              <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                <span className="num">
-                  {fb.wins} برد / {fb.losses} باخت
-                </span>
-                <span className="num">{fb.settled} تسویه‌شده</span>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <span className="pulse-dot size-2 rounded-full bg-violet-400 text-violet-400" />
-                  تنیس
-                </span>
-                <AnimatedNumber value={tn.winRate} decimals={1} suffix="%" className="num text-sm font-bold text-violet-300" />
-              </div>
-              <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                <span className="num">
-                  {tn.wins} برد / {tn.losses} باخت
-                </span>
-                <span className="num">{tn.settled} تسویه‌شده</span>
-              </div>
-            </div>
-
-            <div>
-              <div className="mb-1.5 text-[10px] text-muted-foreground">تفکیک سود (واحد):</div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-xl border border-slate-800/70 bg-secondary/40 px-3 py-2 text-center">
-                  <div className="text-[10px] text-muted-foreground">سود فوتبال</div>
-                  <div className={cn("num text-sm font-bold", fb.profit >= 0 ? "text-emerald-300" : "text-red-300")}>
-                    {signed(fb.profit)}u
-                  </div>
-                </div>
-                <div className="rounded-xl border border-slate-800/70 bg-secondary/40 px-3 py-2 text-center">
-                  <div className="text-[10px] text-muted-foreground">سود تنیس</div>
-                  <div className={cn("num text-sm font-bold", tn.profit >= 0 ? "text-emerald-300" : "text-red-300")}>
-                    {signed(tn.profit)}u
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* ============ Module 3 — Equity curve + daily PnL ============ */}
+      {/* ============ Module 5 — Equity curve + daily PnL (kept from v2.x) ============ */}
       <Card className="glass glass-hover gap-4 p-4" data-testid="overview-charts">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -590,143 +617,34 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
         </div>
       </Card>
 
-      {/* ============ Module 4 — Radar + Pick of the Day ============ */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
-        <Card className="glass glass-hover gap-4 p-4 xl:col-span-2" data-testid="overview-radar">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <RadarIcon className="size-4 text-cyan-300" />
-              <h2 className="text-sm font-bold">رادار زنده اسکنر بازار</h2>
-            </div>
-            <Badge variant="outline" className="border-neon-cyan bg-cyan-500/10 text-[10px] font-bold text-cyan-300">
-              <span className="pulse-dot size-1.5 rounded-full bg-cyan-400 text-cyan-400" />
-              {state.openSignals.length} هدف فعال
-            </Badge>
-          </div>
-          <RadarPanel open={state.openSignals} />
-        </Card>
-
-        <div className="xl:col-span-3" data-testid="overview-pick">
-          {pick ? (
-            <TiltShell className="h-full">
-              <Card className="glass glass-hover flex h-full flex-col gap-3 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Crown className="size-4 text-amber-300" />
-                    <h2 className="text-sm font-bold text-amber-200">سیگنال طلایی امروز — Pick of the Day</h2>
-                  </div>
-                  <Badge variant="outline" className="border-amber-400/40 bg-amber-400/10 text-[10px] text-amber-300">
-                    🟡 MODEL FAIR PRICE — قیمت برآوردی مدل (مارجین ۵.۵٪)
-                  </Badge>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/70 bg-secondary/40 px-3 py-2.5">
-                  <TeamBlock name={pick.homeName} logo={pick.homeLogo} role="میزبان / بازیکن ۱" />
-                  <div className="shrink-0 text-center">
-                    <div className="num text-[10px] font-black text-cyan-300">VS</div>
-                    <div className="text-base leading-none">{pick.sport === "tennis" ? "🎾" : "⚽"}</div>
-                  </div>
-                  <TeamBlock name={pick.awayName} logo={pick.awayLogo} role="میهمان / بازیکن ۲" />
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                  <span className="rounded-md border border-slate-800 bg-secondary px-1.5 py-0.5" dir="auto">
-                    {pick.league}
-                  </span>
-                  <span dir="ltr" className="num inline-block tabular-nums">{fmtDateTimeFa(pick.startTime, false)}</span>
-                  <span className="rounded-md bg-secondary px-1.5 py-0.5">{lineLabel(pick.line)}</span>
-                </div>
-
-                <div
-                  dir="ltr"
-                  className="rounded-xl border-neon-gold bg-amber-400/10 px-3 py-2.5 text-center shadow-[0_0_18px_rgba(245,158,11,0.15)]"
-                >
-                  <div className="num text-sm font-bold tracking-tight text-amber-300 md:text-base">
-                    {officialBetLine(pick.marketKey, pick.selection, pick.marketLabel, pick.homeName, pick.awayName)}
-                  </div>
-                </div>
-                <p className="-mt-1 text-center text-[11px] leading-5 text-muted-foreground">{marketFa(pick.marketKey)}</p>
-
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <PriceTag price={pick.price} className="px-3 py-1.5 text-lg" />
-                    <Badge variant="outline" className="border-neon-emerald bg-emerald-500/10 text-xs font-bold text-emerald-300">
-                      +EV {fmtUnits(pick.evPct, 1)}%
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="num rounded-lg border border-slate-700 bg-secondary px-2.5 py-1 text-[11px]">
-                      استیک {fmtUnits(pick.stake, 0)}u · {pick.stakeMode === "KELLY_025" ? "Kelly" : "Flat"}
-                    </span>
-                    {pick.netProfit != null && (
-                      <span
-                        className={cn(
-                          "num rounded-lg border px-2.5 py-1 text-[11px] font-bold",
-                          pick.netProfit >= 0
-                            ? "border-neon-emerald bg-emerald-500/10 text-emerald-300"
-                            : "border-red-500/40 bg-red-500/10 text-red-300",
-                        )}
-                      >
-                        {signed(pick.netProfit)}u
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/70 pt-2.5">
-                  <HashChip hash={pick.shaHash} />
-                  <span className="text-[10px] text-muted-foreground">
-                    ⚖️ {pick.sport === "tennis" ? "تسویه: تکمیل کامل مسابقه (Retirement = ابطال)" : "تسویه: ۹۰ دقیقه زمان قانونی"}
-                  </span>
-                </div>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-auto border-neon-gold bg-amber-400/10 text-amber-300 hover:bg-amber-400/20 hover:text-amber-200"
-                  onClick={() => openPickSport(pick.sport)}
-                >
-                  مشاهده در مرکز سیگنال‌ها
-                  <ArrowLeft className="size-3.5" />
-                </Button>
-              </Card>
-            </TiltShell>
-          ) : (
-            <Card className="glass flex h-full flex-col gap-4 p-4">
-              <div className="flex items-center gap-2">
-                <Satellite className="size-4 text-amber-300" />
-                <h2 className="text-sm font-bold text-amber-200">سیگنال طلایی امروز — Pick of the Day</h2>
-              </div>
-              <EmptyState
-                icon="🛰️"
-                title="امروز سیگنال طلایی فعال نیست"
-                sub="نزدیک‌ترین سیگنال‌های +EV در مرکز سیگنال‌ها در دسترس است — کارت طلایی فقط سیگنال‌های امروز تهران را نشان می‌دهد."
-              />
-            </Card>
-          )}
-        </div>
-      </div>
-
-      {/* ============ Module 5 — Recent settlements strip ============ */}
+      {/* ============ Module 6 — Interactive recent settlements (v3.1 audit) ============ */}
       <Card className="glass glass-hover gap-3 p-4" data-testid="overview-settlements">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Trophy className="size-4 text-emerald-300" />
-            <h2 className="text-sm font-bold">آخرین تسویه‌های رسمی</h2>
+            <h2 className="text-sm font-bold">آخرین تسویه‌های رسمی — ممیزی اجماع</h2>
           </div>
-          <span className="num text-[10px] text-muted-foreground">{state.settledSignals.length} تسویه‌شده در دفتر</span>
+          <span className="num text-[10px] text-muted-foreground">
+            <span dir="ltr">{state.settledSignals.length}</span> تسویه‌شده در دفتر
+          </span>
         </div>
         {recent.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             هنوز مسابقه‌ای تسویه نشده — موتور FT پس از پایان دیدارها نتایج ESPN را ثبت می‌کند.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="max-h-[560px] space-y-2 overflow-y-auto scroll-slim" data-testid="overview-settlement-list">
             {recent.map((s) => {
               const amt = s.netProfit ?? 0;
               const expanded = expandedSettlements.has(s.id);
-              // v2.7.1 §1 — official bookmaker naming with the REAL team names.
-              const alias = resolveBookmakerAliases(s.marketKey, s.selection, s.homeName, s.awayName);
+              const st = settlementStatus(s.status);
+              // FT: football "2-1", tennis real set scores ("6-4, 6-3")
+              const ft =
+                s.sport === "tennis"
+                  ? (s.setResult ?? "—")
+                  : s.homeScore != null && s.awayScore != null
+                    ? `${s.homeScore}-${s.awayScore}`
+                    : "—";
               return (
                 <div
                   key={s.id}
@@ -746,21 +664,20 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                       })
                     }
                     aria-expanded={expanded}
-                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-right"
                   >
                     <div className="min-w-0">
                       <div className="truncate text-xs font-medium" dir="auto">
                         {s.matchInfo}
                       </div>
-                      <div className="truncate text-right text-[10px] text-muted-foreground" dir="ltr">
+                      <div className="truncate text-[10px] text-muted-foreground" dir="ltr">
                         {officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName)}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <span className="hidden rounded-md bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground sm:inline">
-                        {lineLabel(s.line)}
+                      <span className="num hidden inline-block text-[9px] tabular-nums text-slate-500 md:inline" dir="ltr">
+                        {fmtDateTimeFa(s.settledAt, false)}
                       </span>
-                      <span className="num hidden inline-block text-[9px] tabular-nums text-slate-500 md:inline" dir="ltr">{fmtDateTimeFa(s.settledAt, false)}</span>
                       <span className={cn("num text-[11px] font-bold", statusColor(s.status))}>
                         {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
                       </span>
@@ -773,54 +690,109 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
                           s.status !== "WON" && s.status !== "LOST" && s.status !== "VOID" && "border border-amber-400/40 bg-amber-400/15 text-amber-300",
                         )}
                       >
-                        {s.status === "WON" ? "برد" : s.status === "LOST" ? "باخت" : s.status === "VOID" ? "ابطال" : "باز"}
+                        {s.status === "WON" ? "برد" : s.status === "LOST" ? "باخت" : s.status === "VOID" ? "پوش" : "باز"}
                       </span>
+                      <ChevronDown className={cn("size-3.5 text-slate-500 transition-transform", expanded && "rotate-180")} />
                     </div>
                   </button>
+
                   {expanded && (
-                    <div className="border-t border-slate-800/70 px-3 py-2.5">
+                    <div className="border-t border-slate-800/70 px-3 py-2.5" data-testid="settlement-audit-panel">
+                      <div className="mb-2 text-[10px] font-bold tracking-wide text-cyan-300">
+                        ممیزی اجماع سوپرایجنت — Quant × Coach × Sharp-Prior
+                      </div>
+
                       <div className="grid grid-cols-1 gap-1.5 text-[11px] sm:grid-cols-2">
-                        <div className="flex items-center justify-between gap-2" dir="ltr">
-                          <span className="text-slate-500">1xBet</span>
-                          <span className="num text-cyan-300">{alias.onexbetPath}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2" dir="ltr">
-                          <span className="text-slate-500">BetForward</span>
-                          <span className="num text-cyan-300">{alias.betforwardPath}</span>
+                        {/* Quant superagent view */}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">کوانت — احتمال مدل</span>
+                          <span className="num font-bold text-emerald-300" dir="ltr">
+                            {(s.modelProb * 100).toFixed(1)}%
+                          </span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">ضریب ثبت‌شده</span>
-                          <span className="num font-bold text-foreground">{s.price.toFixed(2)}</span>
+                          <span className="text-slate-500">کوانت — بدون‌باخت</span>
+                          <span className="num font-bold text-cyan-300" dir="ltr">
+                            {s.noLossProb != null ? `${(s.noLossProb * 100).toFixed(1)}%` : "—"}
+                          </span>
                         </div>
+
+                        {/* Coach superagent view */}
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">استیک Quarter-Kelly</span>
-                          <span className="num font-bold text-foreground">{fmtUnits(s.stake)}u · {s.stakeMode}</span>
+                          <span className="text-slate-500">مربی — اجماع نهایی</span>
+                          <span className="num font-bold text-violet-300" dir="ltr">
+                            {s.consensusPct != null ? `${s.consensusPct}%` : "—"}
+                          </span>
                         </div>
+
+                        {/* Sharp sensor status */}
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-slate-500">CLV</span>
-                          <span className="num text-slate-400">— (ثبت نشده)</span>
+                          <span className="text-slate-500">حسگر شارپ</span>
+                          <span className={cn("text-[10px]", s.sharpSource ? "text-slate-300" : "text-slate-500")}>
+                            {s.sharpSource ?? "بازار در دسترس نبود — وزن صفر"}
+                          </span>
                         </div>
+                        {s.sharpAlert && (
+                          <div className="flex items-center justify-between gap-2 sm:col-span-2">
+                            <span className="text-slate-500">واگرایی</span>
+                            <span className="rounded-md border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-bold text-red-300">
+                              هشدار واگرایی شارپ
+                            </span>
+                          </div>
+                        )}
+
+                        {/* FT result + settlement status */}
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-500">نتیجه FT</span>
                           <span className="num font-bold text-foreground" dir="ltr">
-                            {s.homeScore != null && s.awayScore != null ? `${s.homeScore}-${s.awayScore}` : (s.surface ? "set-based" : "—")}
+                            {ft}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">وضعیت</span>
+                          <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-bold", st.cls)}>{st.label}</span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500">ضریب ثبت‌شده</span>
+                          <span className="num font-bold text-foreground" dir="ltr">
+                            {s.price.toFixed(2)}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-500">سود / زیان خالص</span>
-                          <span className={cn("num font-bold", s.netProfit != null && s.netProfit >= 0 ? "text-emerald-300" : "text-red-300")}>
+                          <span
+                            className={cn(
+                              "num font-bold",
+                              s.status === "VOID" ? "text-slate-300" : amt >= 0 ? "text-emerald-300" : "text-red-300",
+                            )}
+                            dir="ltr"
+                          >
                             {s.status === "VOID" ? "±0.0u" : `${signed(amt)}u`}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between gap-2">
+
+                        {/* Coach tactical note — static descriptive text */}
+                        <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 px-2.5 py-2 text-[10px] leading-5 text-violet-200/80 sm:col-span-2">
+                          یادداشت تاکتیکی مربی: وزن سوپرایجنت مربی بر پایه فرم ۵ بازی اخیر، ترکیب سالم و
+                          الگوی مالکیت توپ / سبک بازی در اجماع نهایی اعمال شده است.
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 sm:col-span-2">
                           <span className="text-slate-500">قفل ← تسویه</span>
                           <span className="num text-[10px] text-slate-400" dir="ltr">
-                            {formatSafeDateTime(s.lockedAt)} ← {formatSafeDateTime(s.settledAt)}
+                            {fmtDateTimeFa(s.lockedAt)} ← {fmtDateTimeFa(s.settledAt)}
                           </span>
                         </div>
                       </div>
-                      <div className="mt-2 border-t border-slate-800/50 pt-1.5">
-                        <HashChip hash={s.shaHash} />
+
+                      {/* Full SHA-256 audit hash — mono chip, LTR */}
+                      <div
+                        className="num mt-2 break-all rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1.5 text-[10px] text-slate-400"
+                        dir="ltr"
+                        title="SHA-256 audit hash"
+                      >
+                        SHA-256 · {s.shaHash}
                       </div>
                     </div>
                   )}

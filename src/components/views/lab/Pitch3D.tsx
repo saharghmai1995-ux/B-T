@@ -207,11 +207,14 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
                 />
               ))}
 
-              {/* (2) goal expectation vectors λ_H / λ_A — neon arrows at each goal */}
+              {/* (2) goal expectation vectors λ_H / λ_A — neon arrows at each goal.
+                  Labels sit HIGH (home) / LOW (away) so they never collide with
+                  the centre circle, each other or the heatmap arcs; a dark
+                  paint-order stroke keeps them readable over the glow blobs. */}
               <svg
                 viewBox="0 0 100 62.5"
                 preserveAspectRatio="none"
-                className="pointer-events-none absolute inset-0 h-full w-full"
+                className="pointer-events-none absolute inset-0 z-20 h-full w-full"
               >
                 <defs>
                   <marker id="qlArrH" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto">
@@ -222,19 +225,27 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
                   </marker>
                 </defs>
                 <line
-                  x1="34" y1="31.25" x2="12" y2="31.25"
+                  x1="34" y1="24.5" x2="12" y2="24.5"
                   stroke="#34D399" strokeWidth="1.5" strokeLinecap="round"
                   markerEnd="url(#qlArrH)" opacity="0.95"
                 />
-                <text x="35" y="28.6" fontSize="4.4" fill="#34D399" style={{ fontFamily: "monospace" }}>
+                <text
+                  x="35.5" y="21.6" fontSize="4" fill="#34D399"
+                  paintOrder="stroke" stroke="#05140C" strokeWidth="1.1"
+                  style={{ fontFamily: "var(--font-jetbrains), monospace" }}
+                >
                   λ_H {model.lh.toFixed(2)}
                 </text>
                 <line
-                  x1="66" y1="31.25" x2="88" y2="31.25"
+                  x1="66" y1="38" x2="88" y2="38"
                   stroke="#A78BFA" strokeWidth="1.5" strokeLinecap="round"
                   markerEnd="url(#qlArrA)" opacity="0.95"
                 />
-                <text x="66" y="36.4" fontSize="4.4" fill="#A78BFA" style={{ fontFamily: "monospace" }}>
+                <text
+                  x="66" y="42.6" fontSize="4" fill="#A78BFA"
+                  paintOrder="stroke" stroke="#0C0A1D" strokeWidth="1.1"
+                  style={{ fontFamily: "var(--font-jetbrains), monospace" }}
+                >
                   λ_A {model.la.toFixed(2)}
                 </text>
               </svg>
@@ -253,9 +264,12 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
           </span>
           <span className="text-[10px] text-slate-400">🏟️ {match.venue ?? "—"}</span>
           <span className="text-[10px] text-slate-400">
-            λ_H <span dir="ltr" className="num neon-emerald">{model.lh.toFixed(2)}</span>
-            {" · "}
-            λ_A <span dir="ltr" className="num neon-violet">{model.la.toFixed(2)}</span>
+            بردار گل (λ):{" "}
+            <span dir="ltr" className="num whitespace-nowrap">
+              λ_H <span className="neon-emerald">{model.lh.toFixed(2)}</span>
+              {" · "}
+              λ_A <span className="neon-violet">{model.la.toFixed(2)}</span>
+            </span>
           </span>
           <span
             dir="ltr"
@@ -274,8 +288,10 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
       {/* ── 6x6 matrix card ───────────────────────────────────────── */}
       <div className="glass p-4">
         <h3 className="mb-2 text-sm font-bold">ماتریس چگالی ۶×۶ دیکسون-کولز</h3>
-        <div className="mx-auto w-full max-w-[360px]" dir="ltr">
-          <div className="grid grid-cols-7 gap-1">
+        {/* mobile-safe: below ~360px the matrix scrolls horizontally instead
+            of squashing — axis labels can never collide or wrap */}
+        <div className="mx-auto w-full max-w-[360px] overflow-x-auto scroll-slim" dir="ltr">
+          <div className="grid min-w-[300px] grid-cols-7 gap-1">
             <div />
             {[0, 1, 2, 3, 4, 5].map((a) => (
               <div key={`ax${a}`} className="num text-center text-[10px] text-muted-foreground">
@@ -302,19 +318,22 @@ export function Pitch3D({ matches }: { matches: AppMatch[] }) {
           </div>
         </div>
 
-        {/* mandatory summary line — LTR row with per-number LTR spans */}
+        {/* mandatory summary line — per-formula LTR mono spans (λ formulas) */}
         <div
           dir="ltr"
           className="mt-3 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-[11px] text-slate-300"
         >
-          <span>λ Home =</span>
-          <span dir="ltr" className="num neon-emerald">{model.lh.toFixed(2)}</span>
+          <span dir="ltr" className="num whitespace-nowrap">
+            λ Home = <span className="neon-emerald">{model.lh.toFixed(2)}</span>
+          </span>
           <span className="text-slate-600">|</span>
-          <span>λ Away =</span>
-          <span dir="ltr" className="num neon-violet">{model.la.toFixed(2)}</span>
+          <span dir="ltr" className="num whitespace-nowrap">
+            λ Away = <span className="neon-violet">{model.la.toFixed(2)}</span>
+          </span>
           <span className="text-slate-600">|</span>
-          <span>ρ =</span>
-          <span dir="ltr" className="num neon-cyan">-0.08</span>
+          <span dir="ltr" className="num whitespace-nowrap">
+            ρ = <span className="neon-cyan">-0.08</span>
+          </span>
         </div>
 
         <p className="mt-2 text-[10px] leading-5 text-muted-foreground">

@@ -1,20 +1,35 @@
 "use client";
 
 /**
- * View 3 — QuantLabView: 3D lab tabs (football pitch / tennis court / QQL).
+ * View 3 — QuantLabView: the SuperAgent Calibration Lab (v3.1).
+ * 4 sub-tabs: کالیبراسیون (default) | زمین فوتبال 3D | زمین تنیس 3D | کنسول QQL.
  * Tabs are pure client state — the page never resets them.
+ *
+ * v3.1 hardening: the CSS-3D modules (Pitch3D / Court3D) are wrapped in a
+ * local LabErrorBoundary so a render crash inside a 3D module can NEVER
+ * reset the whole page — the boundary shows a glass "حالت امن" panel with a
+ * retry button that remounts the child via a React key bump.
  */
 
 import { useState } from "react";
+import { FlaskConical } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Pitch3D } from "./lab/Pitch3D";
 import { Court3D } from "./lab/Court3D";
 import { QqlConsole } from "./lab/QqlConsole";
+import { CalibrationLab } from "./lab/CalibrationLab";
+import { LabErrorBoundary } from "./lab/LabErrorBoundary";
 import type { AppStatePayload } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 const TABS = [
+  {
+    key: "calibration",
+    label: "آزمایشگاه کالیبراسیون",
+    desc: "داشبورد زنده SuperAgent 3 — نمودار Reliability Bins، وزن‌های Ensemble، کالیبراسیون پلت، معیارهای Brier / Log-Loss / ECE و اقتصاد وتو",
+    activeCls: "border border-amber-500/30 bg-amber-500/15 text-amber-300 shadow-[0_0_18px_rgba(245,158,11,0.15)]",
+  },
   {
     key: "pitch",
     label: "⚽ زمین فوتبال 3D",
@@ -34,6 +49,8 @@ const TABS = [
     activeCls: "border border-violet-500/30 bg-violet-500/15 text-violet-300 shadow-[0_0_18px_rgba(167,139,250,0.15)]",
   },
 ] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
 
 /**
  * v2.7 — Tennis Engine Feed status card (patch §2-آ):
@@ -87,24 +104,27 @@ function TennisFeedStatus({ state }: { state: AppStatePayload }) {
 }
 
 export default function QuantLabView({ state }: { state: AppStatePayload }) {
-  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("pitch");
+  const [tab, setTab] = useState<TabKey>("calibration");
   const current = TABS.find((t) => t.key === tab) ?? TABS[0];
 
   return (
     <div className="space-y-4" data-testid="lab-view">
       <Card className="glass p-2">
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="زیربخش‌های آزمایشگاه کوانتوم">
           {TABS.map((t) => (
             <button
               key={t.key}
+              role="tab"
+              aria-selected={tab === t.key}
               onClick={() => setTab(t.key)}
               className={cn(
-                "rounded-xl px-3 py-2 text-xs font-medium transition-all",
+                "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition-all",
                 tab === t.key
                   ? t.activeCls
                   : "border border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
+              {t.key === "calibration" && <FlaskConical className="size-3.5" aria-hidden />}
               {t.label}
             </button>
           ))}
@@ -112,10 +132,22 @@ export default function QuantLabView({ state }: { state: AppStatePayload }) {
         <p className="mt-1.5 px-1 text-[10px] leading-5 text-muted-foreground">{current.desc}</p>
       </Card>
 
-      <TennisFeedStatus state={state} />
+      {tab !== "calibration" && <TennisFeedStatus state={state} />}
 
-      {tab === "pitch" && <Pitch3D matches={state.matches} />}
-      {tab === "court" && <Court3D matches={state.matches} />}
+      {tab === "calibration" && <CalibrationLab state={state} />}
+
+      {tab === "pitch" && (
+        <LabErrorBoundary label="زمین فوتبال 3D" testId="pitch-boundary">
+          <Pitch3D matches={state.matches} />
+        </LabErrorBoundary>
+      )}
+
+      {tab === "court" && (
+        <LabErrorBoundary label="زمین تنیس Hawk-Eye 3D" testId="court-boundary">
+          <Court3D matches={state.matches} />
+        </LabErrorBoundary>
+      )}
+
       {tab === "qql" && <QqlConsole />}
     </div>
   );

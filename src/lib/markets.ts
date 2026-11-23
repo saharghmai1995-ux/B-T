@@ -58,6 +58,15 @@ const MAP: Record<string, MarketNames> = {
   "gamehand_away_-3.5": { en: "Game Handicap: Player B -3.5 Games", fa: "هندیکپ گیم بازیکن دوم: ۳.۵- گیم", settle: TENNIS_SETTLE },
   "gamehand_away_+3.5": { en: "Game Handicap: Player B +3.5 Games", fa: "هندیکپ گیم بازیکن دوم: +۳.۵ گیم", settle: TENNIS_SETTLE },
   acca2: { en: "2-Leg Smart Accumulator", fa: "میکس ۲ پایه‌ای از دو مسابقه مستقل", settle: "تسویه: هر دو پایه باید برنده شوند" },
+  // v3.1 Push-Shield markets (SuperAgent Hit-Rate Engine)
+  DNB_AH0: { en: "Handicap 0 (Draw No Bet)", fa: "سپر کامل برگشت: مساوی = بازگشت کامل استیک", settle: FOOTBALL_SETTLE },
+  AH_PLUS_025: { en: "Asian Handicap +0.25", fa: "سپر نیمه‌برگشت: مساوی = نصف برد + نصف بازگشت", settle: FOOTBALL_SETTLE },
+  DOUBLE_CHANCE: { en: "Double Chance", fa: "سپر دو نتیجه: دو حالت از سه حالت پوشش داده می‌شود", settle: FOOTBALL_SETTLE },
+  OVER_2_0: { en: "Asian Total Over 2.0 Goals", fa: "سپر برگشت مجموع گل: دقیقاً ۲ گل = بازگشت استیک", settle: FOOTBALL_SETTLE },
+  UNDER_3_0: { en: "Asian Total Under 3.0 Goals", fa: "سپر برگشت مجموع گل: دقیقاً ۳ گل = بازگشت استیک", settle: FOOTBALL_SETTLE },
+  TENNIS_ML: { en: "Match Winner", fa: "برنده مسابقه — برد مستقیم", settle: TENNIS_SETTLE },
+  TENNIS_SET_PLUS_15: { en: "Set Handicap +1.5", fa: "سپر ست: پوشش با برد حداقل یک ست", settle: TENNIS_SETTLE },
+  TENNIS_GAME_HCP: { en: "Games Handicap ±3.5", fa: "هندیکپ گیم: اختلاف گیم‌ها با خط ۳.۵", settle: TENNIS_SETTLE },
 };
 
 const SELECTION_EN: Record<string, string> = {
@@ -113,7 +122,14 @@ export function settlementRule(sport: string, marketKey: string): string {
 export function marketFamilyKey(marketKey: string): string {
   if (marketKey === "1x2") return "1X2";
   if (marketKey === "acca2") return "Accumulator";
-  if (marketKey === "dnb") return "Draw No Bet";
+  if (marketKey === "dnb" || marketKey === "DNB_AH0") return "Draw No Bet";
+  if (marketKey === "AH_PLUS_025") return "Asian Handicap +0.25";
+  if (marketKey === "DOUBLE_CHANCE") return "Double Chance";
+  if (marketKey === "OVER_2_0") return "Asian Total Over 2.0";
+  if (marketKey === "UNDER_3_0") return "Asian Total Under 3.0";
+  if (marketKey === "TENNIS_ML") return "Match Winner";
+  if (marketKey === "TENNIS_SET_PLUS_15") return "Set Handicap +1.5";
+  if (marketKey === "TENNIS_GAME_HCP") return "Games Handicap";
   if (marketKey === "btts") return "BTTS";
   if (marketKey.startsWith("dc_")) return "Double Chance";
   if (marketKey.startsWith("ah_")) return "Asian Handicap";

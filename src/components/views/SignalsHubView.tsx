@@ -4,10 +4,19 @@
  * View 2 — SignalsHubView: live signals hub — VIP-only, ZERO paywall.
  * Every signal renders fully open (no locked prop, no blur, no tier gating).
  *
- * Filter bar: sport chips / production line chips / book chips (informational —
- * both books execute the identical official button).
- * Honesty note: reflects whether a real 1xBet odds key is configured in
- * تنظیمات — 🟡 MODEL FAIR PRICE until a key exists, 🟢 LIVE REAL ODDS after.
+ * v3.1 spec:
+ *  - DEFAULT sort = ascending kickoff time (`startTime` asc); signals whose
+ *    match already kicked off, or that miss a valid startTime, go LAST.
+ *    An optional "بیشترین EV" sort stays available; default never changes.
+ *  - Production-line chips: all | SINGLE_EV | ACCA2 | SHIELD | ARB
+ *    (SHIELD = سپر سربه‌سر via `lineLabel`).
+ *  - Book switch 1xBet | BetForward | ALL drives the FULL official market
+ *    wording (market name + full team/player name, no ◆, no clipping).
+ *  - Sport chips stay bound to the global `sportFilter` zustand state; the
+ *    global `searchQuery` filters match/league/team names.
+ *  - Honesty banners kept: LIVE 1xBet REAL ODDS vs MODEL FAIR PRICE via
+ *    SourceBadge on every card; SHIELD cards carry the honest (possibly
+ *    negative) model-vs-market EV badge.
  */
 
 import { useMemo, useState } from "react";
@@ -16,8 +25,9 @@ import { EmptyState } from "@/components/shared/primitives";
 import { useAppStore, type SportFilter } from "@/lib/store";
 import { SignalCard, type CardBookMode } from "./SignalCard";
 import type { AppStatePayload } from "@/lib/api-types";
+import { lineLabel } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
-import { Activity, Crosshair, Layers3, Scale } from "lucide-react";
+import { Activity, ArrowDownWideNarrow, Crosshair, Layers3, Scale, ShieldCheck } from "lucide-react";
 
 const SPORTS: Array<{ key: SportFilter; label: string }> = [
   { key: "all", label: "🌐 همه" },
@@ -29,16 +39,34 @@ const LINES = [
   { key: "all", label: "همه خطوط", icon: Crosshair },
   { key: "SINGLE_EV", label: "تک‌شرط +EV تیپ A", icon: Crosshair },
   { key: "ACCA2", label: "میکس ۲ تایی 1.8x–2.25x", icon: Layers3 },
+  { key: "SHIELD", label: lineLabel("SHIELD"), icon: ShieldCheck },
   { key: "ARB", label: "آربیتراژ/همپوشانی واقعی", icon: Scale },
+] as const;
+
+const SORTS = [
+  { key: "kickoff", label: "زمان شروع ↑" },
+  { key: "ev", label: "بیشترین EV" },
 ] as const;
 
 const BOOKS = ["all", "1xBet", "BetForward"] as const;
 
+type SortKey = (typeof SORTS)[number]["key"];
+
+/** Safe kickoff timestamp — null when missing/invalid (goes last). */
+const kickoffTs = (iso: string): number | null => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : null;
+};
+
 export default function SignalsHubView({ state }: { state: AppStatePayload }) {
   const sportFilter = useAppStore((s) => s.sportFilter);
   const setSportFilter = useAppStore((s) => s.setSportFilter);
+  const searchQuery = useAppStore((s) => s.searchQuery);
   const [line, setLine] = useState<(typeof LINES)[number]["key"]>("all");
   const [book, setBook] = useState<(typeof BOOKS)[number]>("all");
+  // v3.1 — DEFAULT sort is ascending kickoff; "بیشترین EV" is opt-in only.
+  const [sort, setSort] = useState<SortKey>("kickoff");
 
   // A real 1xBet odds key is configured (either provider side).
   const liveKey = state.health.oddsApi || state.health.oddsApiIo;
@@ -51,12 +79,30 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
     let rows = state.openSignals;
     if (sportFilter !== "all") rows = rows.filter((s) => s.sport === sportFilter);
     if (line !== "all") rows = rows.filter((s) => s.line === line);
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((s) =>
+        `${s.matchInfo} ${s.league} ${s.homeName} ${s.awayName}`.toLowerCase().includes(q),
+      );
+    }
     void book;
-    // v2.7 — default order: soonest kickoff first (ascending start time).
-    return [...rows].sort(
-      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime() || b.evPct - a.evPct,
-    );
-  }, [state.openSignals, sportFilter, line, book]);
+    if (sort === "ev") {
+      return [...rows].sort((a, b) => b.evPct - a.evPct);
+    }
+    // v3.1 — default order: ascending kickoff. Already-kicked-off fixtures
+    // (startTime <= now) go after future ones; missing/invalid startTime goes
+    // last. Ties break by EV descending (deterministic + useful).
+    const now = Date.now();
+    const band = (t: number | null) => (t == null ? 2 : t <= now ? 1 : 0);
+    return [...rows].sort((a, b) => {
+      const aT = kickoffTs(a.startTime);
+      const bT = kickoffTs(b.startTime);
+      const bnd = band(aT) - band(bT);
+      if (bnd !== 0) return bnd;
+      if (aT != null && bT != null && aT !== bT) return aT - bT;
+      return b.evPct - a.evPct;
+    });
+  }, [state.openSignals, sportFilter, line, book, searchQuery, sort]);
 
   const arbActive = signals.some((s) => s.line === "ARB");
 
@@ -110,6 +156,25 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
               </button>
             ))}
           </div>
+
+          {/* Sort chips — v3.1 default: ascending kickoff */}
+          <div className="flex items-center gap-1 rounded-xl border border-slate-700/70 bg-secondary/60 p-1">
+            <ArrowDownWideNarrow className="mx-1 size-3.5 shrink-0 text-slate-500" aria-hidden />
+            {SORTS.map((so) => (
+              <button
+                key={so.key}
+                onClick={() => setSort(so.key)}
+                className={cn(
+                  "rounded-lg px-2.5 py-1.5 text-xs transition-colors",
+                  sort === so.key
+                    ? "bg-violet-500/15 text-violet-300"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {so.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Production line chips */}
@@ -154,6 +219,17 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
         </div>
       )}
 
+      {/* ── Shield honesty note (when the SHIELD production line is selected) */}
+      {line === "SHIELD" && (
+        <div className="glass flex items-start gap-2 border-violet-500/25 p-3 text-[11px] leading-6 text-violet-200/90">
+          <ShieldCheck className="mt-1 size-3.5 shrink-0 text-violet-300" aria-hidden />
+          <span>
+            خط سپر سربه‌سر فقط از بازارهای محافظت‌شده (Handicap 0، AH +0.25، Double Chance، Asian Total 2.0/3.0) صادر
+            می‌شود؛ نشان EV روی کارت‌های سپر مقدار صادقانه مدل در برابر بازار است و ممکن است منفی باشد — پنهان نمی‌شود.
+          </span>
+        </div>
+      )}
+
       {/* ── Arb honesty note ───────────────────────────────────────────────── */}
       {!arbActive && (line === "all" || line === "ARB") && (
         <div className="glass border-amber-400/25 p-3 text-[11px] leading-6 text-amber-200/90">
@@ -171,7 +247,7 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
           sub="خط تک‌شرط تیپ A فقط با EV ≥ +4.5% و ضریب واقعی 1.72x–2.20x صادر می‌شود؛ دکمه همگام‌سازی را بزنید تا موتورها بازار را دوباره اسکن کنند."
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {signals.map((s, i) => (
             <SignalCard key={s.id} s={s} rank={i} bookMode={bookMode} />
           ))}

@@ -223,3 +223,61 @@ export function SkeletonGrid({ count = 4 }: { count?: number }) {
     </div>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/* v3.1 SuperAgent ensemble badges                                     */
+/* ------------------------------------------------------------------ */
+
+const TIER_STYLE: Record<string, { label: string; cls: string }> = {
+  TIER_S: { label: "TIER S", cls: "bg-amber-400/15 text-amber-300 border-amber-400/40 shadow-[0_0_12px_-2px_rgba(245,158,11,0.5)]" },
+  TIER_A: { label: "TIER A", cls: "bg-emerald-400/15 text-emerald-300 border-emerald-400/40 shadow-[0_0_12px_-2px_rgba(52,211,153,0.45)]" },
+  TIER_B: { label: "TIER B", cls: "bg-cyan-400/15 text-cyan-300 border-cyan-400/40 shadow-[0_0_12px_-2px_rgba(0,229,255,0.4)]" },
+};
+
+/** v3.1 Confidence Tier badge (S/A/B) — null tier renders nothing. */
+export function TierBadge({ tier, className }: { tier: string | null | undefined; className?: string }) {
+  if (!tier) return null;
+  const t = TIER_STYLE[tier];
+  if (!t) return null;
+  return (
+    <Badge variant="outline" className={cn("border px-2 py-0 text-[10px] font-bold tracking-wider", t.cls, className)}>
+      {t.label}
+    </Badge>
+  );
+}
+
+const SHIELD_LABEL_FA: Record<string, string> = {
+  DIRECT_WIN: "برد مستقیم",
+  FULL_PUSH_SHIELD: "سپر کامل برگشت",
+  HALF_PUSH_SHIELD: "سپر نیمه‌برگشت",
+  DOUBLE_OUTCOME_SHIELD: "سپر دو نتیجه",
+};
+
+const SHIELD_STYLE: Record<string, string> = {
+  DIRECT_WIN: "bg-violet-400/10 text-violet-300 border-violet-400/30",
+  FULL_PUSH_SHIELD: "bg-emerald-400/10 text-emerald-300 border-emerald-400/30",
+  HALF_PUSH_SHIELD: "bg-amber-400/10 text-amber-300 border-amber-400/30",
+  DOUBLE_OUTCOME_SHIELD: "bg-cyan-400/10 text-cyan-300 border-cyan-400/30",
+};
+
+/** v3.1 Push-Shield type badge — null renders nothing. */
+export function ShieldBadge({ shieldType, className }: { shieldType: string | null | undefined; className?: string }) {
+  if (!shieldType) return null;
+  return (
+    <Badge variant="outline" className={cn("border px-2 py-0 text-[10px] font-semibold", SHIELD_STYLE[shieldType] ?? "bg-muted text-muted-foreground border-border", className)}>
+      {SHIELD_LABEL_FA[shieldType] ?? shieldType}
+    </Badge>
+  );
+}
+
+/** v3.1 — No-Loss probability chip (win + push mass). */
+export function NoLossChip({ value, className }: { value: number | null | undefined; className?: string }) {
+  if (value == null || !Number.isFinite(value)) return null;
+  const pctVal = Math.round(value * 1000) / 10;
+  const tone = pctVal >= 82 ? "text-emerald-300" : pctVal >= 74 ? "text-amber-300" : "text-cyan-300";
+  return (
+    <span className={cn("num inline-flex items-center gap-1 text-xs font-bold", tone, className)} title="No-Loss Probability = Win + Push">
+      {pctVal.toFixed(1)}%
+    </span>
+  );
+}

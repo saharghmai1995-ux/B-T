@@ -15,19 +15,23 @@
  */
 
 import { db } from "@/lib/db";
-import type { FeedMatch, TeamStat } from "@/core/types";
+import type { FeedMatch, MatchContext, TeamStat } from "@/core/types";
 import { fetchFootballPastDay, fetchTennisPastRange, pastDayKey, fetchFootballSummaryOdds } from "@/core/bookmakers/espn-history";
 import { fetchFootballStandings, FOOTBALL_LEAGUES } from "@/core/bookmakers/odds-feed";
 import { getMarket } from "@/core/bookmakers/market-whitelist";
-import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
+import { buildFootballFactory, buildTennisFactory, type FactoryOutput } from "./signal-factory";
 import { resolveSelection } from "@/core/ledger/settlement-engine";
-import { chooseStakeMode, accaPrice, STARTING_BANK, calculateSafeQuarterKellyStake, MIN_STAKE, fullKelly } from "@/core/math/kelly";
+import { chooseStakeMode, accaPrice, STARTING_BANK, calculateSafeQuarterKellyStake, MIN_STAKE, fullKelly, FLAT_VIEW_STAKE } from "@/core/math/kelly";
+import { marginPrice, BOOK_MARGIN, round2 } from "@/core/math/devig";
 import { MIN_TENNIS_EV } from "@/engines/tennis/tennis-selector";
-import { round2 } from "@/core/math/devig";
 import { lockSignal } from "@/core/ledger/sha256-chain";
 import { tehranDayKey } from "./ingest-service";
 import { leagueAverageGoals, findTeamStat } from "./feed-gatherer";
 import { setSetting, getSetting } from "./settings";
+import { runQuantAgent, runCoachAgent } from "@/core/agents/orchestrator";
+import {
+  buildFootballProtectedCandidates, buildTennisProtectedCandidates, assignConfidenceTier,
+} from "@/core/agents/push-shield-selector";
 
 export const HISTORY_SEEDED_KEY = "historySeededAt";
 
@@ -136,6 +140,82 @@ interface PendingLeg {
   evPct: number;
   startTime: Date;
   fixture: { sport: string; homeScore: number; awayScore: number; retired: boolean; detail?: string | null };
+  /** v3.1 — Push-Shield ensemble metadata when the leg is a shield pick. */
+  line?: "SINGLE_EV" | "SHIELD";
+  tier?: string | null;
+  shieldType?: string | null;
+  noLossProb?: number | null;
+  consensusPct?: number | null;
+}
+
+/**
+ * v3.1 — Push-Shield ensemble pick for a HISTORICAL fixture (pure, sync).
+ * Runs the same Quant + Coach agents the live orchestrator uses, derives the
+ * protected candidates from the factory quote board, and returns the best
+ * tier-cleared shield leg — or null. NO EV gate: the v3.1 engine maximises
+ * noLossProb = winProb + pushProb and blocks on the Tier S/A/B ladder only.
+ */
+function shieldPickForFixture(
+  m: FeedMatch,
+  ctx: MatchContext,
+  f: FactoryOutput,
+  statHome: TeamStat | null,
+  statAway: TeamStat | null,
+): PendingLeg | null {
+  try {
+    const quant = runQuantAgent(ctx, f.quotes, statHome, statAway);
+    if (!quant || quant.completeness < 0.65) return null;
+    const coach = runCoachAgent(ctx, quant, statHome, statAway);
+    const candidates = m.sport === "football"
+      ? buildFootballProtectedCandidates({
+          homeTeam: m.homeName, awayTeam: m.awayName,
+          pHome: quant.pHome, pDraw: quant.pDraw, pAway: quant.pAway,
+          pOver2: quant.pOver2, pExact2: quant.pExact2,
+          pUnder3: quant.pUnder3, pExact3: quant.pExact3,
+        })
+      : buildTennisProtectedCandidates({
+          homePlayer: m.homeName, awayPlayer: m.awayName,
+          winnerHome: quant.pHome, winnerAway: quant.pAway,
+          setBet20Home: f.quotes.find((q) => q.marketKey === "setbet_2_0" && q.selection === "HOME")?.modelProb ?? 0,
+          setBet20Away: f.quotes.find((q) => q.marketKey === "setbet_2_0" && q.selection === "AWAY")?.modelProb ?? 0,
+          gameHandHomePlus35: f.quotes.find((q) => q.marketKey === "gamehand_home_+3.5")?.modelProb ?? null,
+          gameHandAwayPlus35: f.quotes.find((q) => q.marketKey === "gamehand_away_+3.5")?.modelProb ?? null,
+          gameHandHomeMinus35: f.quotes.find((q) => q.marketKey === "gamehand_home_-3.5")?.modelProb ?? null,
+          gameHandAwayMinus35: f.quotes.find((q) => q.marketKey === "gamehand_away_-3.5")?.modelProb ?? null,
+        });
+    if (candidates.length === 0) return null;
+    const top = candidates[0];
+    // No sharp prior at backfill time (historical closing odds are absent for
+    // most rows) → model-only blend per spec: 0.65·Quant + 0.35·Coach with
+    // identity Platt (SuperAgent 3 trains on the settled rows afterwards).
+    const quantNoLoss = top.noLossProb;
+    const coachNoLoss = Math.min(1, Math.max(0, quantNoLoss + coach.tacticalDelta));
+    const blended = 0.65 * quantNoLoss + 0.35 * coachNoLoss;
+    const consensus = Math.round(Math.min(100, Math.max(0, 100 - Math.abs(quantNoLoss - coachNoLoss) * 150)) * 10) / 10;
+    const tier = assignConfidenceTier(blended, consensus);
+    if (!tier) return null;
+    const margin = m.sport === "football" ? BOOK_MARGIN.football : BOOK_MARGIN.tennis;
+    const price = marginPrice(top.winProb, margin);
+    const noLossProb = round2(blended * 1000) / 1000;
+    const winProb = round2(top.winProb * 1000) / 1000;
+    return {
+      matchId: ctx.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
+      league: m.league,
+      label: `${m.homeName} vs ${m.awayName} — ${top.marketKey} ${top.selection}`,
+      marketKey: top.marketKey, marketLabel: top.posterLabel, selection: top.selection,
+      modelProb: winProb, trueProb: noLossProb, price,
+      evPct: Math.round((top.winProb * price - 1) * 1000) / 10,
+      startTime: m.startTime,
+      fixture: {
+        sport: m.sport, homeScore: m.homeScore ?? 0, awayScore: m.awayScore ?? 0,
+        retired: m.retired === true, detail: m.detail ?? null,
+      },
+      line: "SHIELD", tier, shieldType: top.shieldType,
+      noLossProb, consensusPct: consensus,
+    };
+  } catch {
+    return null; // the shield path NEVER breaks the backfill
+  }
 }
 
 /** Best backfill candidate: highest-EV quote inside the tradable price band.
@@ -267,6 +347,15 @@ async function buildCandidates(
           leagueAvg(standings[m.leagueCode]),
         )
       : buildTennisFactory(ctx);
+    // v3.1 — the Push-Shield ensemble pick is the fixture's PRIMARY track
+    // record row: the v3.1 engine has NO blocking dependency on odds/EV/Kelly
+    // (spec §0), so whenever a Tier-cleared protected market exists, the
+    // historical ledger records IT instead of the EV-gated ladder pick.
+    const shield = shieldPickForFixture(m, ctx, f, findTeamStat(standings, m.leagueCode, m.homeName), findTeamStat(standings, m.leagueCode, m.awayName));
+    if (shield) {
+      singles.push(shield);
+      continue;
+    }
     // Primary pick: live-gate single → soft paper pick (EV ≥ 0 vs REAL closing
     // odds — the backfill keeps every edge the model saw, not just deep value)
     // → anchor fallback. Supervisor selectivity applies via the coverage roll.
@@ -375,21 +464,20 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
         evPct: round2(prob * price - 1), stake,
         issuedAt: legs[0].startTime.toISOString(),
       });
-      const row = await db.signal.create({
-        data: {
-          matchId: leg.matchId, sport: legs[0].sport, line: "ACCA2", marketKey: "acca2",
-          marketLabel: "2-Leg Smart Accumulator", selection: "ACCA",
-          modelProb: round2(prob), trueProb: round2(prob), price, evPct: round2(prob * price - 1),
-          stake, stakeMode: "KELLY_025",
-          legs: JSON.stringify(legs.map((l) => ({
-            espnEventId: l.espnEventId, label: l.label, marketKey: l.marketKey,
-            selection: l.selection, price: l.price, prob: l.modelProb,
-          }))),
-          shaHash: hash, status, netProfit: net, settledAt,
-          dayKey: tehranDayKey(settledAt), createdAt: legs[0].startTime,
-        },
+      const ok = await createSeededSignal({
+        matchId: leg.matchId, sport: legs[0].sport, line: "ACCA2", marketKey: "acca2",
+        marketLabel: "2-Leg Smart Accumulator", selection: "ACCA",
+        modelProb: round2(prob), trueProb: round2(prob), price, evPct: round2(prob * price - 1),
+        stake, stakeMode: "KELLY_025",
+        legs: JSON.stringify(legs.map((l) => ({
+          espnEventId: l.espnEventId, label: l.label, marketKey: l.marketKey,
+          selection: l.selection, price: l.price, prob: l.modelProb,
+        }))),
+        shaHash: hash, status, netProfit: net, settledAt,
+        dayKey: tehranDayKey(settledAt), createdAt: legs[0].startTime,
       });
-      createdIds.push({ id: row.id, status, kind: "SIGNAL", title: legs.map((l) => l.label).join(" + ") });
+      if (!ok) { i++; continue; }
+      createdIds.push({ id: hash, status, kind: "SIGNAL", title: legs.map((l) => l.label).join(" + ") });
       bank = round2(bank + net);
       accas++;
       if (status === "WON") won++;
@@ -399,7 +487,9 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
       continue;
     }
 
-    const { stake, stakeMode } = chooseStakeMode(leg.modelProb, leg.price, bank);
+    const { stake, stakeMode } = leg.line === "SHIELD"
+      ? { stake: FLAT_VIEW_STAKE, stakeMode: "FLAT_100" as const } // v3.1 — constant-risk flat staking, NO Kelly dependency
+      : chooseStakeMode(leg.modelProb, leg.price, bank);
     // v2.7.2 §1 — a 0 stake means raw Kelly <= 0: never create the row.
     if (stake <= 0) continue;
     const v = resolveSelection(leg.marketKey, leg.selection, leg.fixture);
@@ -412,22 +502,26 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
         : net === 0 && v.status === "WON" ? "VOID" : v.status;
     const settledAt = settleTime(leg.startTime);
     const hash = lockSignal({
-      matchInfo: leg.label, sport: leg.sport, line: "SINGLE_EV",
+      matchInfo: leg.label, sport: leg.sport, line: leg.line ?? "SINGLE_EV",
       marketKey: leg.marketKey, selection: leg.selection, price: leg.price,
       modelProb: leg.modelProb, evPct: leg.evPct, stake,
       issuedAt: leg.startTime.toISOString(),
     });
-    const row = await db.signal.create({
-      data: {
-        matchId: leg.matchId, sport: leg.sport, line: "SINGLE_EV",
-        marketKey: leg.marketKey, marketLabel: leg.marketLabel, selection: leg.selection,
-        modelProb: leg.modelProb, trueProb: leg.trueProb, price: leg.price,
-        evPct: leg.evPct, stake, stakeMode, shaHash: hash,
-        status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
-        createdAt: leg.startTime,
-      },
+    const ok = await createSeededSignal({
+      matchId: leg.matchId, sport: leg.sport, line: leg.line ?? "SINGLE_EV",
+      marketKey: leg.marketKey, marketLabel: leg.marketLabel, selection: leg.selection,
+      modelProb: leg.modelProb, trueProb: leg.trueProb, price: leg.price,
+      evPct: leg.evPct, stake, stakeMode, shaHash: hash,
+      status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
+      createdAt: leg.startTime,
+      // v3.1 shield metadata (null for legacy ladder legs)
+      tier: leg.tier ?? null,
+      shieldType: leg.shieldType ?? null,
+      noLossProb: leg.noLossProb ?? null,
+      consensusPct: leg.consensusPct ?? null,
     });
-    createdIds.push({ id: row.id, status, kind: "SIGNAL", title: leg.label });
+    if (!ok) continue; // duplicate deterministic hash — skip silently
+    createdIds.push({ id: hash, status, kind: "SIGNAL", title: leg.label });
     bank = round2(bank + net);
     if (status === "WON") won++;
     else if (status === "LOST") lost++;
@@ -508,6 +602,21 @@ function settleTime(startTime: Date): Date {
   return t.getTime() > Date.now() - 60_000 ? new Date(Date.now() - 60_000) : t;
 }
 
+/**
+ * Insert a seeded signal, tolerating a duplicate deterministic SHA-256 lock
+ * (a re-run of an interrupted backfill recomputes the SAME hash). A P2002
+ * duplicate is skipped silently; any other failure still surfaces.
+ */
+async function createSeededSignal(data: Parameters<typeof db.signal.create>[0]["data"]): Promise<boolean> {
+  try {
+    await db.signal.create({ data });
+    return true;
+  } catch (err) {
+    if ((err as { code?: string }).code === "P2002") return false;
+    throw err;
+  }
+}
+
 export interface TennisSeedSummary {
   skipped: boolean;
   reason: string;
@@ -569,6 +678,46 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
     const rng = mulberry32(hashSeed(m.espnEventId));
     const roll = rng();
     const f = buildTennisFactory(ctx);
+    // v3.1 — Push-Shield pick FIRST: the protected-market engine has no EV
+    // blocking dependency, so a Tier-cleared shield candidate (noLoss ≥ 0.72,
+    // win ≥ 0.52, Tier S/A/B) enters the tennis ledger with REAL set scores
+    // and the constant-risk flat stake — exactly the live engine's behavior.
+    const shield = shieldPickForFixture(m, ctx, f, null, null);
+    if (shield) {
+      const v = resolveSelection(shield.marketKey, shield.selection, shield.fixture);
+      const stake = FLAT_VIEW_STAKE;
+      const net = round2(
+        v.status === "WON" ? stake * v.factor * (shield.price - 1)
+          : v.status === "LOST" ? -stake : 0,
+      );
+      const status = net > 0 && v.status === "WON" ? "WON"
+        : v.status === "LOST" ? "LOST"
+          : net === 0 && v.status === "WON" ? "VOID" : v.status;
+      const settledAt = settleTime(m.startTime);
+      const hash = lockSignal({
+        matchInfo: shield.label, sport: "tennis", line: "SHIELD",
+        marketKey: shield.marketKey, selection: shield.selection,
+        price: shield.price, modelProb: shield.modelProb, evPct: shield.evPct,
+        stake, issuedAt: m.startTime.toISOString(),
+      });
+      await createSeededSignal({
+        matchId: id, sport: "tennis", line: "SHIELD",
+        marketKey: shield.marketKey, marketLabel: shield.marketLabel,
+        selection: shield.selection,
+        modelProb: shield.modelProb, trueProb: shield.trueProb, price: shield.price,
+        evPct: shield.evPct, stake, stakeMode: "FLAT_100", shaHash: hash,
+        status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
+        createdAt: m.startTime,
+        tier: shield.tier ?? null, shieldType: shield.shieldType ?? null,
+        noLossProb: shield.noLossProb ?? null, consensusPct: shield.consensusPct ?? null,
+      });
+      bank = round2(bank + net);
+      seeded++;
+      if (status === "WON") won++;
+      else if (status === "LOST") lost++;
+      else void_++;
+      continue;
+    }
     // v2.7.2 §1 — HARD +EV tennis backfill: only factory candidates that
     // passed the strict gate (EV >= +4.0%, Kelly > 0, winner = REAL prices,
     // Total Sets = REAL prices) may enter the ledger. The old widening ladder
@@ -609,15 +758,13 @@ export async function seedTennisHistory(): Promise<TennisSeedSummary> {
       price: c.price, modelProb: c.modelProb, evPct, stake,
       issuedAt: m.startTime.toISOString(),
     });
-    await db.signal.create({
-      data: {
-        matchId: id, sport: "tennis", line: "SINGLE_EV",
-        marketKey: c.marketKey, marketLabel, selection: c.selection,
-        modelProb: c.modelProb, trueProb: c.trueProb, price: c.price,
-        evPct, stake, stakeMode, shaHash: hash,
-        status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
-        createdAt: m.startTime,
-      },
+    await createSeededSignal({
+      matchId: id, sport: "tennis", line: "SINGLE_EV",
+      marketKey: c.marketKey, marketLabel, selection: c.selection,
+      modelProb: c.modelProb, trueProb: c.trueProb, price: c.price,
+      evPct, stake, stakeMode, shaHash: hash,
+      status, netProfit: net, settledAt, dayKey: tehranDayKey(settledAt),
+      createdAt: m.startTime,
     });
     bank = round2(bank + net);
     seeded++;

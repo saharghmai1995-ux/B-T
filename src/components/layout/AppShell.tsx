@@ -31,12 +31,13 @@ import {
 } from "lucide-react";
 import QuantumLogo from "@/components/layout/QuantumLogo";
 
-const NAV: Array<{ key: ViewKey; label: string; short: string; icon: React.ElementType }> = [
-  { key: "overview", label: "داشبورد عملکرد", short: "داشبورد", icon: LayoutDashboard },
-  { key: "signals", label: "مرکز سیگنال‌ها", short: "سیگنال‌ها", icon: Crosshair },
-  { key: "ledger", label: "کارنامه رسمی", short: "کارنامه", icon: ShieldCheck },
-  { key: "lab", label: "آزمایشگاه کوانت", short: "آزمایشگاه", icon: FlaskConical },
-  { key: "telegram", label: "استودیو تلگرام", short: "استودیو", icon: Radio },
+// v3.1 SUPERAGENT nav naming — primary English label + secondary Persian line.
+const NAV: Array<{ key: ViewKey; label: string; sub: string; short: string; icon: React.ElementType }> = [
+  { key: "overview", label: "Overview", sub: "داشبورد عملکرد", short: "داشبورد", icon: LayoutDashboard },
+  { key: "signals", label: "Predictions Hub", sub: "مرکز پیش‌بینی", short: "سیگنال‌ها", icon: Crosshair },
+  { key: "ledger", label: "Hit-Rate Ledger", sub: "کارنامه سربه‌سر", short: "کارنامه", icon: ShieldCheck },
+  { key: "lab", label: "Calibration Lab", sub: "آزمایشگاه سوپرایجنت", short: "آزمایشگاه", icon: FlaskConical },
+  { key: "telegram", label: "Telegram Studio", sub: "استودیو تلگرام", short: "استودیو", icon: Radio },
   // v2.7 — the Settings & API-keys page is retired: keys live in the
   // git-ignored .env.local and channel config lives in the Telegram studio.
 ];
@@ -144,7 +145,10 @@ export default function AppShell() {
             aria-current={active ? "page" : undefined}
           >
             <Icon className="size-4 shrink-0" />
-            <span className="flex-1 text-right font-medium">{n.label}</span>
+            <span className="flex-1 text-right">
+              <span className="block font-medium">{n.label}</span>
+              <span className="block text-[10px] text-muted-foreground">{n.sub}</span>
+            </span>
             {n.key === "signals" && openCount > 0 && (
               <Badge className="num bg-emerald-500 text-emerald-950 hover:bg-emerald-400 px-1.5 text-[10px]">
                 {openCount}
@@ -311,7 +315,7 @@ export default function AppShell() {
             <footer className="mt-auto pb-2 pt-6">
               <div className="glass flex flex-col items-center justify-between gap-2 p-3 text-[11px] text-muted-foreground sm:flex-row">
                 <span className="flex items-center gap-2">
-                  NeoBet Quant Pro v2.7.2 · قفل سخت +EV تنیس (حداقل +۴٪ و استیک کِلی، حذف کامل شرط‌های -EV) · بازار Total Sets روی ضریب تخمینی کاملاً غیرفعال · نتیجه واقعی ست‌ها در کارنامه · Zero-Mock
+                  NeoBet Quant Pro v3.1 SUPERAGENT · قفل سخت +EV تنیس (حداقل +۴٪ و استیک کِلی، حذف کامل شرط‌های -EV) · بازار Total Sets روی ضریب تخمینی کاملاً غیرفعال · نتیجه واقعی ست‌ها در کارنامه · Zero-Mock
                 </span>
                 <span className="flex items-center gap-3">
                   <LiveClock className="text-cyan-300" />

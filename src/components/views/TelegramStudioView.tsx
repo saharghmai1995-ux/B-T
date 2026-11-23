@@ -38,6 +38,7 @@ import type {
   ScheduleSlot,
 } from "@/lib/api-types";
 import ChannelManagerCard from "@/components/views/ChannelManagerCard";
+import { NoLossChip, ShieldBadge, TierBadge } from "@/components/shared/primitives";
 import {
   CalendarClock,
   CheckCircle2,
@@ -91,6 +92,8 @@ interface PosterSpec {
   competition: string;
   marketEn: string;
   marketFa: string;
+  marketKey: string;
+  line: string;
   price: number;
   evPct: number;
   stake: number;
@@ -101,7 +104,28 @@ interface PosterSpec {
   profit: number | null;
   scoreLine: string | null;
   sport: string;
+  /* v3.1 — SuperAgent ensemble metadata for the shield metric row. */
+  status: string;
+  shieldType: string | null;
+  tier: string | null;
+  noLossProb: number | null; // fraction 0..1 (win + push mass)
+  consensusPct: number | null; // 0..100 agent consensus
+  modelProb: number; // fallback source for no-loss / consensus values
 }
+
+/* v3.1 — English-only shield/tier naming for the poster metric row
+   (the poster canvas is 100% English LTR; Persian lives in captions). */
+const SHIELD_EN: Record<string, string> = {
+  FULL_PUSH_SHIELD: "PUSH SHIELD",
+  HALF_PUSH_SHIELD: "HALF PUSH",
+  DOUBLE_OUTCOME_SHIELD: "DOUBLE CHANCE",
+  DIRECT_WIN: "DIRECT WIN",
+};
+const TIER_EN: Record<string, string> = {
+  TIER_S: "TIER S",
+  TIER_A: "TIER A",
+  TIER_B: "TIER B",
+};
 
 interface EduTopic {
   id: string;
@@ -422,17 +446,20 @@ function drawTopChrome(
   ctx.fillRect(0, 0, w, 10);
   ctx.direction = "ltr";
   ctx.textAlign = "left";
+  // v3.1 — brand block raised (title/tagline baselines 64/94) so the centered
+  // status capsule row at y≈112 sits fully BELOW the NEOBET QUANT PRO title
+  // with zero overlap on the 1080x1350 canvas.
   ctx.font = "bold 40px Arial";
   ctx.fillStyle = "#FFFFFF";
-  ctx.fillText("NEOBET QUANT PRO", 72, 96);
+  ctx.fillText("NEOBET QUANT PRO", 72, 64);
   ctx.textAlign = "right";
   ctx.font = "bold 30px Arial";
   ctx.fillStyle = CYAN;
-  ctx.fillText("@aineobet", w - 72, 96);
+  ctx.fillText("@aineobet", w - 72, 64);
   ctx.textAlign = "left";
   ctx.font = "bold 22px Arial";
   ctx.fillStyle = accent;
-  ctx.fillText(tagline, 72, 140);
+  ctx.fillText(tagline, 72, 94);
 }
 
 function drawTelemetry(
@@ -618,21 +645,38 @@ function drawPoster(
   // 2) top chrome
   drawTopChrome(ctx, w, accent, MODE_TAGLINE[spec.mode]);
 
-  // v2.7 — BIG status badge (42px ExtraBold, colored box) top-center:
-  // NEW SIGNAL cyan / WON emerald / LOST rose.
-  const badgeText = spec.mode === "SIGNAL" ? "NEW SIGNAL" : spec.mode === "WIN" ? "WON" : "LOST";
-  const badgeColor = spec.mode === "SIGNAL" ? "#22D3EE" : spec.mode === "WIN" ? "#10B981" : "#F43F5E";
+  // v3.1 — centered status capsule ROW at y≈112 (top edge 112, below the
+  // title baseline 64 and tagline baseline 94 — zero overlap). Text set:
+  // HIGH PROBABILITY PICK / WON / PUSH — REFUNDED / LOST. A settled VOID
+  // (push) shield signal is honestly labelled PUSH — REFUNDED in gold.
+  const isPush = spec.status === "VOID";
+  const badgeText =
+    spec.mode === "SIGNAL"
+      ? "HIGH PROBABILITY PICK"
+      : isPush
+        ? "PUSH — REFUNDED"
+        : spec.mode === "WIN"
+          ? "WON"
+          : "LOST";
+  const badgeColor = isPush
+    ? GOLD
+    : spec.mode === "SIGNAL"
+      ? "#22D3EE"
+      : spec.mode === "WIN"
+        ? "#10B981"
+        : "#F43F5E";
   {
     ctx.save();
-    ctx.font = "900 42px Arial";
+    ctx.font = "900 40px Arial";
     const tw = ctx.measureText(badgeText).width;
     const bw = tw + 72;
     const bx = w / 2 - bw / 2;
-    const by = 62;
-    const bGrad = ctx.createLinearGradient(bx, by, bx + bw, by + 66);
+    const by = 112;
+    const bh = 56;
+    const bGrad = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
     bGrad.addColorStop(0, hexToRgba(badgeColor, 0.22));
     bGrad.addColorStop(1, hexToRgba(badgeColor, 0.08));
-    rr(ctx, bx, by, bw, 66, 33);
+    rr(ctx, bx, by, bw, bh, 28);
     ctx.fillStyle = bGrad;
     ctx.fill();
     ctx.strokeStyle = badgeColor;
@@ -642,14 +686,15 @@ function drawPoster(
     ctx.shadowBlur = 22;
     ctx.textAlign = "center";
     ctx.fillStyle = badgeColor;
-    ctx.fillText(badgeText, w / 2, by + 47);
+    ctx.fillText(badgeText, w / 2, by + 40);
     ctx.restore();
   }
 
   ctx.textAlign = "center";
   ctx.font = "bold 22px Arial";
   ctx.fillStyle = GOLD;
-  ctx.fillText(trunc(spec.competition.toUpperCase(), 44), w / 2, 178);
+  // v3.1 — pushed below the status capsule (capsule spans 112-168).
+  ctx.fillText(trunc(spec.competition.toUpperCase(), 44), w / 2, 190);
 
   // 3) face-off zone (y ~200-470)
   const cy = 316;
@@ -708,40 +753,91 @@ function drawPoster(
   // Telegram message caption (see sendNow / dispatcher caption builders).
   ctx.direction = "ltr";
 
-  // 5) stat boxes (y ~660-860)
+  // 5) middle band (y ~660-860)
   const boxW = Math.floor((w - 144 - 40) / 3);
   const boxY = 665;
   const boxH = 190;
+  // v3.1 — SHIELD-line signals (or any signal carrying noLossProb) get the
+  // three-card metric row instead of ODDS/EDGE/STAKE: the shield poster
+  // carries NO odds and NO stake numbers anywhere. 100% English, centered,
+  // evenly spaced in the middle band of the poster.
+  const isShieldMetric = spec.line === "SHIELD" || spec.noLossProb != null;
+  const shieldTierValue = (() => {
+    const base =
+      spec.shieldType == null
+        ? "SHIELD"
+        : spec.marketKey.toUpperCase().startsWith("DNB") && spec.shieldType === "FULL_PUSH_SHIELD"
+          ? "DNB PUSH"
+          : (SHIELD_EN[spec.shieldType] ?? "SHIELD");
+    const tier = spec.tier ? (TIER_EN[spec.tier] ?? "") : "";
+    return tier ? `${base} - ${tier}` : base;
+  })();
   const profit = spec.profit ?? 0;
-  const statBoxes: Array<{ label: string; value: string; color: string }> = [
-    { label: "ODDS (DECIMAL)", value: fmtPrice(spec.price), color: "#FFFFFF" },
-    {
-      label: spec.mode === "SIGNAL" ? "MODEL EDGE" : "NET PROFIT",
-      value:
-        spec.mode === "SIGNAL"
-          ? `${spec.evPct >= 0 ? "+" : ""}${spec.evPct.toFixed(1)}%`
-          : `${profit >= 0 ? "+" : ""}${fmtUnits(profit, 2)}u`,
-      color: accent,
-    },
-    { label: "STAKE (UNITS)", value: `${fmtUnits(spec.stake, 2)}u`, color: "#FFFFFF" },
-  ];
-  statBoxes.forEach((b, i) => {
-    const x = 72 + i * (boxW + 20);
-    rr(ctx, x, boxY, boxW, boxH, 18);
-    ctx.fillStyle = "rgba(15,23,42,0.55)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(148,163,184,0.22)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.font = "bold 20px Arial";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#7C8BA1";
-    ctx.fillText(b.label, x + boxW / 2, boxY + 46);
-    const vSize = fitFont(ctx, b.value, boxW - 28, 84, 52);
-    ctx.font = `bold ${vSize}px Arial`;
-    ctx.fillStyle = b.color;
-    ctx.fillText(b.value, x + boxW / 2, boxY + 140);
-  });
+  if (isShieldMetric) {
+    const noLossRaw = Math.min(1, Math.max(0, spec.noLossProb ?? spec.modelProb));
+    const metricCards: Array<{ label: string; value: string; color: string }> = [
+      { label: "NO-LOSS PROB", value: `${(noLossRaw * 100).toFixed(1)}%`, color: EMERALD },
+      { label: "SHIELD / TIER", value: shieldTierValue, color: GOLD },
+      {
+        label: "AGENT CONSENSUS",
+        value: `${Math.round(spec.consensusPct ?? spec.modelProb * 100)}% MATCH`,
+        color: VIOLET,
+      },
+    ];
+    // one uniform value size across the three cards (fitFont per string, min wins)
+    let mSize = 54;
+    for (const c of metricCards) {
+      mSize = Math.min(mSize, fitFont(ctx, c.value, boxW - 24, 54, 16));
+    }
+    metricCards.forEach((b, i) => {
+      const x = 72 + i * (boxW + 20);
+      rr(ctx, x, boxY, boxW, boxH, 18);
+      ctx.fillStyle = hexToRgba(b.color, 0.08);
+      ctx.fill();
+      ctx.strokeStyle = hexToRgba(b.color, 0.45);
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.font = "bold 20px Arial";
+      ctx.textAlign = "center";
+      ctx.direction = "ltr";
+      ctx.fillStyle = "#7C8BA1";
+      ctx.fillText(b.label, x + boxW / 2, boxY + 46);
+      ctx.font = `bold ${mSize}px Arial`;
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.value, x + boxW / 2, boxY + 140);
+    });
+    ctx.direction = "ltr";
+  } else {
+    const statBoxes: Array<{ label: string; value: string; color: string }> = [
+      { label: "ODDS (DECIMAL)", value: fmtPrice(spec.price), color: "#FFFFFF" },
+      {
+        label: spec.mode === "SIGNAL" ? "MODEL EDGE" : "NET PROFIT",
+        value:
+          spec.mode === "SIGNAL"
+            ? `${spec.evPct >= 0 ? "+" : ""}${spec.evPct.toFixed(1)}%`
+            : `${profit >= 0 ? "+" : ""}${fmtUnits(profit, 2)}u`,
+        color: accent,
+      },
+      { label: "STAKE (UNITS)", value: `${fmtUnits(spec.stake, 2)}u`, color: "#FFFFFF" },
+    ];
+    statBoxes.forEach((b, i) => {
+      const x = 72 + i * (boxW + 20);
+      rr(ctx, x, boxY, boxW, boxH, 18);
+      ctx.fillStyle = "rgba(15,23,42,0.55)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(148,163,184,0.22)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.font = "bold 20px Arial";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#7C8BA1";
+      ctx.fillText(b.label, x + boxW / 2, boxY + 46);
+      const vSize = fitFont(ctx, b.value, boxW - 28, 84, 52);
+      ctx.font = `bold ${vSize}px Arial`;
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.value, x + boxW / 2, boxY + 140);
+    });
+  }
 
   // 6) info bar (y ~900-1000)
   const d = new Date(spec.kickoffIso);
@@ -996,6 +1092,8 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
       competition: "Live feed sync — fixture pending",
       marketEn: "Official market line unlocks with the next signal",
       marketFa: "در انتظار نخستین سیگنال زندهٔ موتور کوانت",
+      marketKey: "",
+      line: "NONE",
       price: 0,
       evPct: 0,
       stake: 0,
@@ -1006,6 +1104,12 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
       profit: null,
       scoreLine: null,
       sport: "football",
+      status: "OPEN",
+      shieldType: null,
+      tier: null,
+      noLossProb: null,
+      consensusPct: null,
+      modelProb: 0,
     };
   }
   return {
@@ -1017,6 +1121,8 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
     // v2.7.1 §1 — official bookmaker naming with the REAL team names.
     marketEn: officialBetLine(s.marketKey, s.selection, s.marketLabel, s.homeName, s.awayName),
     marketFa: marketFa(s.marketKey),
+    marketKey: s.marketKey,
+    line: s.line,
     price: s.price,
     evPct: s.evPct,
     stake: s.stake,
@@ -1030,6 +1136,12 @@ function buildPosterSpec(s: AppSignal | null, mode: PosterMode): PosterSpec {
         ? `${s.homeScore} - ${s.awayScore}`
         : null,
     sport: s.sport,
+    status: s.status,
+    shieldType: s.shieldType,
+    tier: s.tier,
+    noLossProb: s.noLossProb,
+    consensusPct: s.consensusPct,
+    modelProb: s.modelProb,
   };
 }
 
@@ -1383,9 +1495,12 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
   /* ---------------- render ---------------- */
 
   return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-3" data-testid="telegram-view">
+    <div
+      className="grid w-full max-w-full min-w-0 grid-cols-1 gap-4 overflow-x-hidden xl:grid-cols-3"
+      data-testid="telegram-view"
+    >
       {/* ============ Column 1 — CHANNEL MANAGER + POSTER ENGINE + Edu studio ============ */}
-      <div className="space-y-4 xl:col-span-2">
+      <div className="min-w-0 space-y-4 xl:col-span-2">
         {/* v2.6 — Telegram connection & PUBLIC/VIP lane manager */}
         <ChannelManagerCard />
 
@@ -1442,7 +1557,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               </span>
               <span className="shrink-0 text-[10px] text-muted-foreground">{pool.length} گزینه</span>
             </div>
-            <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto scroll-slim">
+            <div className="mb-3 flex max-h-32 flex-wrap gap-1.5 overflow-y-auto scroll-slim">
               {pool.map((s) => {
                 const active = selectedSignalId === s.id && variant.type === "match";
                 return (
@@ -1454,14 +1569,20 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                     }}
                     title={s.matchInfo}
                     className={cn(
-                      "max-w-full truncate rounded-md border px-2 py-1 text-[10px] transition-all",
+                      "flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-all",
                       active
                         ? "border-cyan-500/60 bg-cyan-500/10 text-cyan-200"
                         : "border-slate-800 bg-secondary/40 text-slate-400 hover:border-slate-600",
                     )}
                   >
-                    مسابقه: {s.matchInfo}{" "}
-                    <span className={statusColor(s.status)}>({s.status})</span>
+                    <span className="min-w-0 truncate">
+                      مسابقه: {s.matchInfo}{" "}
+                    </span>
+                    <span className={cn("shrink-0", statusColor(s.status))}>({s.status})</span>
+                    {/* v3.1 — ensemble chips next to the signal name */}
+                    <NoLossChip value={s.noLossProb} className="shrink-0 text-[9px]" />
+                    <TierBadge tier={s.tier} className="shrink-0" />
+                    <ShieldBadge shieldType={s.shieldType} className="shrink-0" />
                   </button>
                 );
               })}
@@ -1476,7 +1597,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
           {selectedSignal && (
             <div
               dir="ltr"
-              className="mb-3 rounded-lg border border-slate-800/70 bg-secondary/40 px-2.5 py-1.5 text-left text-[10px] text-slate-300"
+              className="mb-3 min-w-0 break-words rounded-lg border border-slate-800/70 bg-secondary/40 px-2.5 py-1.5 text-left text-[10px] text-slate-300"
             >
               {officialBetLine(
                 selectedSignal.marketKey,
@@ -1566,6 +1687,43 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
             <GraduationCap className="size-4 text-violet-300" />
             <h2 className="text-sm font-bold">📚 استودیو پست‌های آموزشی کوانت</h2>
           </div>
+          {/* v3.1 — quick-access education/tips chip strip. Single-row
+              horizontal scroll — chips NEVER wrap to a second line:
+              overflow-x-auto + shrink-0 + whitespace-nowrap, 44px touch target. */}
+          <div
+            className="mb-3 flex gap-2 overflow-x-auto scroll-slim pb-1"
+            role="tablist"
+            aria-label="دسترسی سریع تاپیک‌های آموزشی"
+          >
+            {EDU_TOPICS.map((t) => {
+              const eduActive = variant.type === "edu" && variant.topicId === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={eduActive}
+                  title={t.enTag}
+                  onClick={() => {
+                    setEduOpen((o) => ({ ...o, [t.id]: true }));
+                    setVariant({ type: "edu", topicId: t.id });
+                    scrollToPoster();
+                  }}
+                  className={cn(
+                    "flex h-11 shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border px-3.5 text-xs font-bold transition-all",
+                    eduActive
+                      ? "border-violet-500/60 bg-violet-500/10 text-violet-200"
+                      : "border-slate-800 bg-secondary/40 text-slate-300 hover:border-violet-500/40 hover:text-violet-200",
+                  )}
+                >
+                  <span className="num text-[11px]" style={{ color: t.accent }}>
+                    {t.index}
+                  </span>
+                  <span className="whitespace-nowrap">{t.fa}</span>
+                </button>
+              );
+            })}
+          </div>
           <div className="space-y-2">
             {EDU_TOPICS.map((t) => {
               const open = !!eduOpen[t.id];
@@ -1636,7 +1794,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       </div>
 
       {/* ============ Column 2 — Schedule + News ============ */}
-      <div className="space-y-4 xl:col-span-1">
+      <div className="min-w-0 space-y-4 xl:col-span-1">
         {/* MODULE الف — Broadcast schedule */}
         <Card className="glass p-4">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -1672,7 +1830,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
           </div>
 
           <div className="rounded-lg border border-slate-800/70">
-            <div className="grid grid-cols-[52px_1fr_68px_100px_78px] gap-1 border-b border-slate-800/70 bg-secondary/50 px-2 py-1.5 text-[10px] font-bold text-slate-400">
+            <div className="grid grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] gap-1 border-b border-slate-800/70 bg-secondary/50 px-2 py-1.5 text-[10px] font-bold text-slate-400">
               <span>ساعت</span>
               <span>عنوان</span>
               <span>کانال</span>
@@ -1689,12 +1847,12 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               {sortedSlots.map((s) => (
                 <div
                   key={s.id}
-                  className="grid grid-cols-[52px_1fr_68px_100px_78px] items-center gap-1 border-b border-slate-800/50 px-2 py-1.5 text-[11px] last:border-0"
+                  className="grid grid-cols-[42px_minmax(0,1fr)_58px_92px_60px] items-center gap-1 border-b border-slate-800/50 px-2 py-1.5 text-[11px] last:border-0"
                 >
                   <span className="num text-slate-200" dir="ltr">
                     {s.time}
                   </span>
-                  <span className="truncate" title={s.slotTitle}>
+                  <span className="min-w-0 truncate" title={s.slotTitle}>
                     {s.slotTitle}
                   </span>
                   <span>
@@ -1711,7 +1869,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                   </span>
                   <span
                     className={cn(
-                      "text-[10px] font-bold",
+                      "min-w-0 truncate text-[10px] font-bold",
                       s.sentAt ? "text-emerald-400" : "text-amber-300",
                     )}
                   >
@@ -1781,24 +1939,24 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               </label>
             </div>
             {showAddForm && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_84px_112px_auto]">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_72px_100px_auto]">
                 <Input
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
                   placeholder="عنوان اسلات — مثلاً سیگنال تنیس عصرگاهی"
-                  className="h-8 border-slate-800 bg-secondary/50 text-xs"
+                  className="h-8 min-w-0 border-slate-800 bg-secondary/50 text-xs"
                 />
                 <Input
                   value={newTime}
                   onChange={(e) => setNewTime(e.target.value)}
                   dir="ltr"
                   placeholder="HH:mm"
-                  className="h-8 border-slate-800 bg-secondary/50 text-center text-xs"
+                  className="h-8 min-w-0 border-slate-800 bg-secondary/50 text-center text-xs"
                 />
                 <select
                   value={newKind}
                   onChange={(e) => setNewKind(e.target.value as typeof newKind)}
-                  className="h-8 rounded-md border border-slate-800 bg-secondary/50 px-2 text-xs text-slate-200 outline-none"
+                  className="h-8 min-w-0 rounded-md border border-slate-800 bg-secondary/50 px-2 text-xs text-slate-200 outline-none"
                   aria-label="نوع پست"
                 >
                   <option value="SIGNAL">کارت سیگنال → VIP</option>
@@ -1811,7 +1969,7 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
                   onClick={() => void addSlot()}
                   disabled={bBusy}
                   size="sm"
-                  className="h-8 gap-1 bg-cyan-500 text-[11px] text-cyan-950 hover:bg-cyan-400"
+                  className="h-8 shrink-0 gap-1 whitespace-nowrap bg-cyan-500 text-[11px] text-cyan-950 hover:bg-cyan-400"
                 >
                   <Plus className="size-3.5" /> ➕ افزودن اسلات
                 </Button>
@@ -1852,8 +2010,11 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
             )}
             {news.map((n) => (
               <div key={n.id} className="rounded-lg border border-slate-800/70 bg-secondary/40 p-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 dir="ltr" className="text-left text-xs font-bold leading-5 text-slate-100">
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <h3
+                    dir="ltr"
+                    className="min-w-0 break-words text-left text-xs font-bold leading-5 text-slate-100"
+                  >
                     {n.headline}
                   </h3>
                   <a

@@ -14,6 +14,11 @@ import { resolveSelection } from "@/core/ledger/settlement-engine";
 import { accaPrice, chooseStakeMode } from "@/core/math/kelly";
 import { round2 } from "@/core/math/devig";
 import { runRcaVetoes } from "./rca-veto";
+import {
+  loadCalibrationContext,
+  generateShieldForFixture,
+  settlePendingShieldVetoes,
+} from "@/core/agents/shield-integration";
 
 export interface IngestSummary {
   matchesUpserted: number;
@@ -21,6 +26,10 @@ export interface IngestSummary {
   signalsCreated: number;
   settledCount: number;
   accasCreated: number;
+  /** v3.1 — Push-Shield superagent signals issued this run. */
+  shieldsCreated: number;
+  /** v3.1 — fixtures moved to the Shadow Ledger by the veto orchestrator. */
+  shieldVetoes: number;
   degraded: boolean;
   notes: string[];
   ranAt: string;
@@ -71,12 +80,14 @@ async function settleFinished(
     const ref = idByEspn.get(m.espnEventId);
     if (!ref) continue;
     const open = await db.signal.findMany({ where: { matchId: ref.id, status: "OPEN" } });
-    if (open.length === 0) continue;
     const fixture = {
       sport: ref.sport, homeScore: m.homeScore!, awayScore: m.awayScore!,
       retired: m.retired === true,
       detail: m.detail ?? null, // v2.7.2 — set scores feed tot_games/gamehand settlement
     };
+    // v3.1 — settle PENDING shadow vetoes (shield engine) with the REAL FT score.
+    settled += await settlePendingShieldVetoes(m.espnEventId, fixture);
+    if (open.length === 0) continue;
     for (const sig of open) {
       if (sig.line === "ACCA2") {
         const done = await settleAcca(sig.id);
@@ -158,8 +169,8 @@ async function settleArb(sig: { id: string; stake: number; arbBooks: string | nu
   return 1;
 }
 
-/** Generate quotes + Line-1 signals for upcoming fixtures. */
-async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; singles: number }> {
+/** Generate quotes + Line-1 signals + v3.1 Push-Shield ensembles for upcoming fixtures. */
+async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; singles: number; shields: number; shieldVetoes: number }> {
   const preAll = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
   // v2.7.1 hotfix §2.5 — dedicated tennis budget: the old shared slice(0, 90)
   // was consumed by football alone (899 tennis pre fixtures sat beyond the
@@ -179,6 +190,10 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
   const have = new Set(existing.map((s) => `${s.matchId}|${s.marketKey}|${s.selection}`));
   const bank = await currentBankroll();
   let espnTennisOddsFetches = 0; // v2.7.1 — layer-3 public-odds budget per run
+  // v3.1 — SuperAgent-3 calibration context (Platt + adaptive weights), ONCE per run.
+  const calib = await loadCalibrationContext();
+  let shields = 0;
+  let shieldVetoes = 0;
 
   for (const m of upcoming.slice(0, 90)) {
     const id = await upsertMatch(m);
@@ -202,6 +217,10 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       if (f.single && !have.has(`${id}|${f.single.marketKey}|${f.single.selection}`)) {
         singles += await persistSingle(f.single, bank);
       }
+      // v3.1 — parallel SuperAgent ensemble → Push-Shield signal / shadow veto.
+      const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: ref, statHome: sh, statAway: sa, calib });
+      if (shield.issued === "SIGNAL") shields++;
+      if (shield.issued === "VETO") shieldVetoes++;
     } else {
       // v2.7.1 hotfix §2.5 — keyless ESPN Core PUBLIC per-event odds feed the
       // tennis selector directly (layer 3): when Layers 1/2 carry no row for
@@ -231,9 +250,13 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       if (f.single && !have.has(`${id}|${f.single.marketKey}|${f.single.selection}`)) {
         singles += await persistSingle(f.single, bank);
       }
+      // v3.1 — parallel SuperAgent ensemble → Push-Shield signal / shadow veto.
+      const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: null, statHome: null, statAway: null, calib });
+      if (shield.issued === "SIGNAL") shields++;
+      if (shield.issued === "VETO") shieldVetoes++;
     }
   }
-  return { quotes, singles };
+  return { quotes, singles, shields, shieldVetoes };
 }
 
 async function persistQuotes(matchId: string, quotes: FactoryQuotes): Promise<number> {
@@ -349,12 +372,13 @@ export async function runIngest(opts?: { feed?: GatheredPack }): Promise<IngestS
     idByEspn.set(m.espnEventId, { id: await upsertMatch(m), sport: m.sport });
   }
   const settledCount = await settleFinished(pack, idByEspn);
-  const { quotes, singles } = await generateSignals(pack);
+  const { quotes, singles, shields, shieldVetoes } = await generateSignals(pack);
   const accasCreated = await buildAccas(pack);
   await runRcaVetoes();
   const summary: IngestSummary = {
     matchesUpserted: all.length, quotesUpserted: quotes,
     signalsCreated: singles, settledCount, accasCreated,
+    shieldsCreated: shields, shieldVetoes,
     degraded: pack.degraded, notes: pack.notes, ranAt: new Date().toISOString(),
   };
   if (purged > 0) summary.notes.push(`Legacy SIM rows purged: ${purged}`);

@@ -16,6 +16,11 @@ import { backfillShadowVetoes } from "./rca-veto";
 import { getSettings, getSetting, setSetting, maskSettings, SETTING_KEYS, getOddsPapiApiKey } from "./settings";
 import { getOddsFeedStats } from "@/core/bookmakers/odds-feed";
 import { shinDevig } from "@/core/math/devig";
+import {
+  computeCalibration, trainPlatt, computeEnsembleWeights, computeWinStreak, auditShadowLedger,
+  type CalibrationRow, type ReliabilityBin, type PlattParams,
+} from "@/core/agents/calibration";
+import { runSuperAgentV31Migration } from "@/core/agents/v31-migration";
 
 export interface AppState {
   metrics: MasterMetrics;
@@ -23,6 +28,8 @@ export interface AppState {
   openSignals: AppSignal[];
   settledSignals: AppSignal[];
   shadowVetoes: AppVeto[];
+  /** v3.1 — SuperAgent Calibration Lab block. */
+  agentLab: AgentLab;
   settings: Record<string, string>;
   health: {
     espn: boolean; oddsApi: boolean; oddsApiIo: boolean;
@@ -76,6 +83,13 @@ export interface AppSignal {
   /** v2.7.2 §3 — REAL set scores (e.g. "6-4, 6-3") extracted from the ESPN
    * linescores-derived detail — shown in the Verified Ledger FT column. */
   setResult: string | null;
+  /** v3.1 — SuperAgent ensemble metadata (Push-Shield Hit-Rate Engine). */
+  tier: string | null;
+  shieldType: string | null;
+  noLossProb: number | null;
+  consensusPct: number | null;
+  sharpSource: string | null;
+  sharpAlert: boolean | null;
 }
 
 export interface AppVeto {
@@ -104,6 +118,34 @@ export interface AppMatch extends MatchContext {
   awayLogo: string | null;
   scores: { home: number | null; away: number | null };
   quotes: Array<{ marketKey: string; selection: string; price: number; trueProb: number; source: string }>;
+}
+
+/** v3.1 — SuperAgent Calibration Lab payload (SuperAgent 3 live dashboard). */
+export interface AgentLab {
+  brier: number;
+  logLoss: number;
+  ece: number;
+  pureWinRate: number;
+  noLossRate: number;
+  decidedCount: number;
+  settledCount: number;
+  reliabilityBins: ReliabilityBin[];
+  platt: PlattParams;
+  weights: { wQuant: number; wCoach: number; wMarket: number };
+  winStreak: number;
+  lastStatuses: string[];
+  shadow: {
+    savedLossCount: number;
+    savedLossUnits: number;
+    missedWinCount: number;
+    missedWinUnits: number;
+    shadowLiftPct: number;
+    winRateWithVeto: number;
+    winRateWithoutVeto: number;
+  };
+  tierStats: Record<string, { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number }>;
+  shieldStats: Record<string, { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number }>;
+  vetoedLeagues: Array<{ league: string; sport: string; count: number }>;
 }
 
 /** Pure cold-start decision (unit-testable). */
@@ -155,6 +197,9 @@ async function toAppSignals(rows: Awaited<ReturnType<typeof fetchSignals>>): Pro
     venue: s.match.venue, surface: s.match.surface,
     homeScore: s.match.homeScore, awayScore: s.match.awayScore,
     setResult: s.sport === "tennis" ? extractTennisSetResult(s.match.detail) : null,
+    tier: s.tier, shieldType: s.shieldType,
+    noLossProb: s.noLossProb, consensusPct: s.consensusPct,
+    sharpSource: s.sharpSource, sharpAlert: s.sharpAlert,
   }));
 }
 
@@ -172,6 +217,97 @@ function fetchSignals() {
     orderBy: { createdAt: "desc" },
     take: 400,
   });
+}
+
+/**
+ * v3.1 — assemble the SuperAgent Calibration Lab from settled rows + vetoes.
+ * Pure DB reads + deterministic math; runs in <10ms for 400 rows.
+ */
+function buildAgentLab(
+  signals: Awaited<ReturnType<typeof fetchSignals>>,
+  vetoes: Array<{ verdict: string | null; savedUnits: number | null; league: string | null; sport: string | null }>,
+): AgentLab {
+  const settled = signals.filter((s) => s.status !== "OPEN");
+  const calibRows: CalibrationRow[] = settled.map((s) => ({
+    modelProb: s.noLossProb ?? s.modelProb,
+    trueProb: s.trueProb,
+    status: s.status as CalibrationRow["status"],
+    stake: s.stake,
+    netProfit: s.netProfit ?? 0,
+    sport: s.sport,
+    tier: s.tier,
+  }));
+  const calibration = computeCalibration(calibRows);
+  const platt = trainPlatt(calibRows);
+  const weights = computeEnsembleWeights(calibration, false, platt);
+  const streak = computeWinStreak([...calibRows].reverse()); // newest-first
+  const shadow = auditShadowLedger(
+    calibRows,
+    vetoes.map((v) => ({ verdict: v.verdict, savedUnits: v.savedUnits })),
+  );
+
+  const bucket = (key: string, acc: Record<string, { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number }>) => {
+    acc[key] = acc[key] ?? { wins: 0, losses: 0, voids: 0, winRate: 0, noLossRate: 0, settled: 0 };
+    return acc[key];
+  };
+  const tierStats: AgentLab["tierStats"] = {};
+  const shieldStats: AgentLab["shieldStats"] = {};
+  for (const s of settled) {
+    const decided = s.status === "WON" || s.status === "LOST";
+    if (s.tier) {
+      const b = bucket(s.tier, tierStats);
+      if (s.status === "WON") b.wins++;
+      else if (s.status === "LOST") b.losses++;
+      else b.voids++;
+      b.settled++;
+    }
+    if (s.shieldType) {
+      const b = bucket(s.shieldType, shieldStats);
+      if (s.status === "WON") b.wins++;
+      else if (s.status === "LOST") b.losses++;
+      else b.voids++;
+      b.settled++;
+    }
+    void decided;
+  }
+  for (const b of Object.values(tierStats)) {
+    const d = b.wins + b.losses;
+    b.winRate = d > 0 ? b.wins / d : 0;
+    b.noLossRate = b.settled > 0 ? (b.wins + b.voids) / b.settled : 0;
+  }
+  for (const b of Object.values(shieldStats)) {
+    const d = b.wins + b.losses;
+    b.winRate = d > 0 ? b.wins / d : 0;
+    b.noLossRate = b.settled > 0 ? (b.wins + b.voids) / b.settled : 0;
+  }
+
+  const leagueCount = new Map<string, { league: string; sport: string; count: number }>();
+  for (const v of vetoes) {
+    if (!v.league) continue;
+    const key = `${v.league}|${v.sport ?? ""}`;
+    const e = leagueCount.get(key) ?? { league: v.league, sport: v.sport ?? "football", count: 0 };
+    e.count++;
+    leagueCount.set(key, e);
+  }
+
+  return {
+    brier: calibration.brier,
+    logLoss: calibration.logLoss,
+    ece: calibration.ece,
+    pureWinRate: calibration.pureWinRate,
+    noLossRate: calibration.noLossRate,
+    decidedCount: calibration.decidedCount,
+    settledCount: calibration.settledCount,
+    reliabilityBins: calibration.reliabilityBins,
+    platt,
+    weights: { wQuant: weights.wQuant, wCoach: weights.wCoach, wMarket: weights.wMarket },
+    winStreak: streak.streak,
+    lastStatuses: streak.lastStatuses,
+    shadow,
+    tierStats,
+    shieldStats,
+    vetoedLeagues: [...leagueCount.values()].sort((a, b) => b.count - a.count).slice(0, 12),
+  };
 }
 
 /** Assemble the full client state from the ledger (single source of truth). */
@@ -245,6 +381,7 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     matches,
     openSignals,
     settledSignals,
+    agentLab: buildAgentLab(signals, vetoes),
     shadowVetoes: vetoes.map((v) => ({
       id: v.id, signalRef: v.signalRef, reason: v.reason, category: v.category,
       sport: v.sport, league: v.league, repMatch: v.repMatch, marketLabel: v.marketLabel,
@@ -292,10 +429,20 @@ export async function ensureBootstrapState(): Promise<AppState> {
     if (seedSummary.signalsSeeded > 0) {
       summary = summary ?? {
         matchesUpserted: 0, quotesUpserted: 0, signalsCreated: 0, settledCount: 0,
-        accasCreated: 0, degraded: false, notes: ["Cold-start REAL history backfill applied"],
+        accasCreated: 0, shieldsCreated: 0, shieldVetoes: 0, degraded: false,
+        notes: ["Cold-start REAL history backfill applied"],
         ranAt: new Date().toISOString(),
       };
     }
+  }
+  // v3.1 — one-time SuperAgent metadata backfill (tier / shield / consensus).
+  try {
+    const v31 = await runSuperAgentV31Migration();
+    if (!v31.skipped) {
+      console.log(`[v3.1] superagent migration: ${v31.updated} legacy rows enriched`, v31.tiers);
+    }
+  } catch (err) {
+    console.error("v3.1 superagent migration failed (contained)", err);
   }
   // v2.7.2 tennis hotfix §3 — ONE-TIME purge of every buggy -EV tennis ledger
   // row (ev < +4.0% / forced stakes / estimate Total Sets) + re-backfill with

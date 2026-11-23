@@ -69,6 +69,41 @@ export interface AppSignal {
   awayScore: number | null;
   /** v2.7.2 §3 — REAL set scores ("6-4, 6-3") for tennis ledger rows (FT column). */
   setResult: string | null;
+  /** v3.1 — SuperAgent ensemble metadata (Push-Shield Hit-Rate Engine). */
+  tier: string | null;
+  shieldType: string | null;
+  noLossProb: number | null;
+  consensusPct: number | null;
+  sharpSource: string | null;
+  sharpAlert: boolean | null;
+}
+
+/** v3.1 — SuperAgent Calibration Lab payload. */
+export interface AgentLab {
+  brier: number;
+  logLoss: number;
+  ece: number;
+  pureWinRate: number;
+  noLossRate: number;
+  decidedCount: number;
+  settledCount: number;
+  reliabilityBins: Array<{ binStart: number; binEnd: number; count: number; avgPredicted: number; avgOutcome: number }>;
+  platt: { a: number; b: number; trainedOn: number };
+  weights: { wQuant: number; wCoach: number; wMarket: number };
+  winStreak: number;
+  lastStatuses: string[];
+  shadow: {
+    savedLossCount: number;
+    savedLossUnits: number;
+    missedWinCount: number;
+    missedWinUnits: number;
+    shadowLiftPct: number;
+    winRateWithVeto: number;
+    winRateWithoutVeto: number;
+  };
+  tierStats: Record<string, { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number }>;
+  shieldStats: Record<string, { wins: number; losses: number; voids: number; winRate: number; noLossRate: number; settled: number }>;
+  vetoedLeagues: Array<{ league: string; sport: string; count: number }>;
 }
 
 export interface AppMatch {
@@ -118,6 +153,8 @@ export interface AppStatePayload {
   openSignals: AppSignal[];
   settledSignals: AppSignal[];
   shadowVetoes: AppVeto[];
+  /** v3.1 — SuperAgent Calibration Lab block (optional for older payloads). */
+  agentLab?: AgentLab;
   settings: Record<string, string>;
   health: {
     espn: boolean; oddsApi: boolean; oddsApiIo: boolean;
@@ -135,6 +172,9 @@ export interface AppStatePayload {
     signalsCreated: number;
     settledCount: number;
     accasCreated: number;
+    /** v3.1 — Push-Shield signals issued this run (optional for older payloads). */
+    shieldsCreated?: number;
+    shieldVetoes?: number;
     degraded: boolean;
     notes: string[];
     ranAt: string;
@@ -199,11 +239,11 @@ export const fmtUnits = (n: number, d = 1) =>
 
 export const fmtPrice = (n: number) => n.toFixed(2);
 
-export const lineLabel = (line: string): string =>
-  ({
+export const lineLabel = (line: string): string =>  ({
     SINGLE_EV: "تک‌شرط ارزش عمیق",
     ACCA2: "میکس ۲ تایی هوشمند",
     ARB: "آربیتراژ دو بوک‌میکر",
+    SHIELD: "شرط سپر سربه‌سر",
   })[line] ?? line;
 
 export const statusColor = (status: string): string =>

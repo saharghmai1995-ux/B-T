@@ -83,6 +83,32 @@ export function resolveSelection(key: string, sel: string, r: FixtureResult): Se
       return { status: (res === "HOME" || res === "DRAW") && total < 3.5 ? "WON" : "LOST", factor: 1 };
     case "combo_home_o1.5":
       return { status: res === "HOME" && h > 1.5 && total > 1.5 ? "WON" : "LOST", factor: 1 };
+    // v3.1 Push-Shield markets — same honest settlement vocabulary.
+    case "DNB_AH0": {
+      if (res === "DRAW") return { status: "VOID", factor: 1 };
+      const favIsHome = sel === "HOME";
+      return { status: (favIsHome && res === "HOME") || (!favIsHome && res === "AWAY") ? "WON" : "LOST", factor: 1 };
+    }
+    case "AH_PLUS_025": {
+      // Split AH 0/0.25: win → full; draw → half win, half push (factor 0.5);
+      // loss → lost. Selection encodes the side: HOME_+0.25 | AWAY_+0.25.
+      const favIsHome = sel.startsWith("HOME");
+      const favWon = favIsHome ? res === "HOME" : res === "AWAY";
+      const favLost = favIsHome ? res === "AWAY" : res === "HOME";
+      if (favWon) return { status: "WON", factor: 1 };
+      if (favLost) return { status: "LOST", factor: 1 };
+      return { status: "WON", factor: 0.5 }; // draw = half win + half push
+    }
+    case "DOUBLE_CHANCE": {
+      const won = sel === "1X" ? res === "HOME" || res === "DRAW" : res === "AWAY" || res === "DRAW";
+      return { status: won ? "WON" : "LOST", factor: 1 };
+    }
+    case "OVER_2_0":
+      if (total === 2) return { status: "VOID", factor: 1 }; // push on exactly 2
+      return { status: total > 2 ? "WON" : "LOST", factor: 1 };
+    case "UNDER_3_0":
+      if (total === 3) return { status: "VOID", factor: 1 }; // push on exactly 3
+      return { status: total < 3 ? "WON" : "LOST", factor: 1 };
     default:
       return { status: "VOID", factor: 1 };
   }
@@ -136,6 +162,27 @@ function resolveTennis(key: string, sel: string, r: FixtureResult): SettleVerdic
       const gb = gamesFromDetail(r.detail, "B") ?? 0;
       const m = key.includes("home") ? ga - gb : gb - ga;
       const line = Number(key.split("_").pop()?.replace("+", "") ?? "0");
+      return m + line > 0 ? "WON" : "LOST";
+    }
+    // v3.1 Push-Shield tennis markets.
+    case "TENNIS_ML":
+      return sel === winner ? "WON" : "LOST";
+    case "TENNIS_SET_PLUS_15": {
+      // selection: HOME_+1.5 | AWAY_+1.5 — covers when that side wins ≥1 set.
+      const isHome = sel.startsWith("HOME");
+      const sideSets = isHome ? setsA : setsB;
+      return sideSets + 1.5 > (isHome ? setsB : setsA) ? "WON" : "LOST";
+    }
+    case "TENNIS_GAME_HCP": {
+      // selection: HOME_±3.5 | AWAY_±3.5 — games margin vs the line.
+      const games = gamesFromDetail(r.detail);
+      if (games == null) return "VOID";
+      const ga = gamesFromDetail(r.detail, "A") ?? 0;
+      const gb = gamesFromDetail(r.detail, "B") ?? 0;
+      const isHome = sel.startsWith("HOME");
+      const lineRaw = sel.split("_").pop()?.replace("+", "") ?? "0";
+      const line = Number(lineRaw);
+      const m = isHome ? ga - gb : gb - ga;
       return m + line > 0 ? "WON" : "LOST";
     }
     default:

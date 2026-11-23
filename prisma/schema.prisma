@@ -58,13 +58,14 @@ model OddsQuote {
   @@index([matchId])
 }
 
-// A tradable recommendation issued by one of the 3 production lines.
+// A tradable recommendation issued by one of the 3 production lines
+// (or the v3.1 Push-Shield superagent line).
 model Signal {
   id          String    @id @default(cuid())
   match       Match     @relation(fields: [matchId], references: [id], onDelete: Cascade)
   matchId     String
   sport       String
-  line        String // "SINGLE_EV" | "ACCA2" | "ARB"
+  line        String // "SINGLE_EV" | "ACCA2" | "ARB" | "SHIELD"
   marketKey   String
   marketLabel String
   selection   String
@@ -82,10 +83,18 @@ model Signal {
   settledAt   DateTime?
   dayKey      String // Tehran-locale YYYY-MM-DD — free-signal accounting
   createdAt   DateTime  @default(now())
+  // v3.1 SuperAgent ensemble metadata (Push-Shield Hit-Rate Engine)
+  tier         String? // "TIER_S" | "TIER_A" | "TIER_B"
+  shieldType   String? // "DIRECT_WIN" | "FULL_PUSH_SHIELD" | "HALF_PUSH_SHIELD" | "DOUBLE_OUTCOME_SHIELD"
+  noLossProb   Float?  // winProb + pushProb at lock time (blended + calibrated)
+  consensusPct Float?  // agent consensus 0..100 (quant vs coach vs sharp)
+  sharpSource  String? // "ESPN_CORE_PUBLIC" | "THE_ODDS_API" | "ODDSPAPI" when prior was available
+  sharpAlert   Boolean? // sharp divergence > 16pp at lock time
 
   @@index([status, sport])
   @@index([line])
   @@index([dayKey])
+  @@index([tier])
 }
 
 // Key-value store for API keys, tier demo switch, telegram config.

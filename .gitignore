@@ -63,3 +63,6 @@ download/
 
 # internal tool artifacts
 tool-results/
+upload/
+.snapshots/
+agent-ctx/
