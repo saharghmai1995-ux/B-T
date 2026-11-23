@@ -3,9 +3,12 @@
  * Single vocabulary used by engines, ledger, pipeline and API responses.
  */
 
-export type Sport = "football" | "tennis";
+// v3.3 — "basketball" (NBA) joins the engine lineup as the third sport.
+export type Sport = "football" | "tennis" | "basketball";
 export type ProductionLine = "SINGLE_EV" | "ACCA2" | "ARB";
-export type SignalStatus = "OPEN" | "WON" | "LOST" | "VOID";
+// v3.3 §2 — stale OPEN picks (>4h past kickoff) are swept into the
+// PENDING_SETTLEMENT queue so Predictions Hub never shows past-dated cards.
+export type SignalStatus = "OPEN" | "WON" | "LOST" | "VOID" | "PENDING_SETTLEMENT";
 export type PriceSource = "LIVE_REF" | "ESTIMATE";
 
 /** A priced market selection stored in the odds store. */
@@ -162,6 +165,7 @@ export interface FeedPack {
   fetchedAt: Date;
   football: FeedMatch[];
   tennis: FeedMatch[];
+  basketball: FeedMatch[]; // v3.3 — NBA engine pack (empty when ESPN unreachable)
   degraded: boolean; // true when network partially failed
   notes: string[];
 }

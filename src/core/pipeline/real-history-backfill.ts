@@ -32,6 +32,8 @@ import { runQuantAgent, runCoachAgent } from "@/core/agents/orchestrator";
 import {
   buildFootballProtectedCandidates, buildTennisProtectedCandidates, assignConfidenceTier,
 } from "@/core/agents/push-shield-selector";
+import { fetchNbaPastRange } from "@/core/bookmakers/nba-feed";
+import { buildNbaProtectedCandidates, nbaWinProbabilities, type NbaMatchFeatures } from "@/engines/nba/nba-selector";
 
 export const HISTORY_SEEDED_KEY = "historySeededAt";
 
@@ -54,8 +56,9 @@ const ACCA_EVERY = 6; // every N-th issued signal becomes a 2-leg acca instead
 const MAX_SUMMARY_FETCHES = 90; // closing-odds summary calls per backfill run
 // v3.2 §3 — INDEPENDENT per-sport quotas (never a shared cap again):
 // football and tennis each get their own 30-row slot in the ledger.
-export const FOOTBALL_BACKFILL_LIMIT = 30;
-export const TENNIS_BACKFILL_LIMIT = 30;
+export const FOOTBALL_BACKFILL_LIMIT = 25; // v3.3 §4 — doc quotas 25/25/25
+export const TENNIS_BACKFILL_LIMIT = 25; // v3.3 §4 — doc quotas 25/25/25
+export const NBA_BACKFILL_LIMIT = 25; // v3.3 §4 — Engine 3 own 14-day quota
 const VETO_INSERT_CAP = 60; // v3.2 — Shadow Ledger must hold REAL verdict rows
 
 export interface HistorySeedSummary {
@@ -118,7 +121,7 @@ async function upsertHistoryMatch(m: FeedMatch): Promise<string> {
  *  fills the FULL 14-day window for the REAL league set (eng.1, esp.1, ita.1,
  *  ger.1, fra.1, bra.1, uefa.champions). Tennis keeps the 30-day ATP/WTA
  *  range. Both packs stay 100% REAL — an outage leaves an empty pack. */
-async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; notes: string[] }> {
+async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: FeedMatch[]; basketball: FeedMatch[]; notes: string[] }> {
   const notes: string[] = [];
 
   // Probe recent past days across ALL leagues, then fill the 14-day window
@@ -138,13 +141,18 @@ async function fetchHistoryPack(): Promise<{ football: FeedMatch[]; tennis: Feed
   const tennis = await fetchTennisPastRange(TENNIS_RANGE[0], TENNIS_RANGE[1]);
   if (tennis.length === 0) notes.push("No finished tennis fixtures found in the 30-day window");
 
-  return { football, tennis, notes };
+  // v3.3 §4 — Engine 3 (NBA): independent 14-day window of finished REAL
+  // scoreboard games (keyless ESPN endpoint, 5s timeout per day).
+  const basketball = await fetchNbaPastRange(14, 1);
+  if (basketball.length === 0) notes.push("No finished NBA fixtures found in the 14-day window");
+
+  return { football, tennis, basketball, notes };
 }
 
 interface PendingLeg {
   matchId: string;
   espnEventId: string;
-  sport: "football" | "tennis";
+  sport: "football" | "tennis" | "basketball";
   league: string;
   label: string;
   marketKey: string;
@@ -217,7 +225,7 @@ function shieldPickForFixture(
     const noLossProb = round2(blended * 1000) / 1000;
     const winProb = round2(top.winProb * 1000) / 1000;
     return {
-      matchId: ctx.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
+      matchId: ctx.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis" | "basketball",
       league: m.league,
       label: `${m.homeName} vs ${m.awayName} — ${top.marketKey} ${top.selection}`,
       marketKey: top.marketKey, marketLabel: top.posterLabel, selection: top.selection,
@@ -277,7 +285,7 @@ export function pickVetoCandidate(
 
 /** Issue candidates for every finished fixture (chronological, deterministic). */
 async function buildCandidates(
-  pack: { football: FeedMatch[]; tennis: FeedMatch[] },
+  pack: { football: FeedMatch[]; tennis: FeedMatch[]; basketball: FeedMatch[] },
   standings: Record<string, TeamStat[]>,
   leagueAvg: (rows: TeamStat[] | undefined) => number,
 ): Promise<{
@@ -296,19 +304,26 @@ async function buildCandidates(
   }> = [];
   // v3.2 §3.1 — INDEPENDENT per-sport quotas: tennis can NEVER eat the whole
   // ledger again, and football always gets its own 30-row slot.
-  const caps: Record<"football" | "tennis", number> = {
+  const caps: Record<"football" | "tennis" | "basketball", number> = {
     football: FOOTBALL_BACKFILL_LIMIT,
     tennis: TENNIS_BACKFILL_LIMIT,
+    basketball: NBA_BACKFILL_LIMIT,
   };
-  const issued: Record<"football" | "tennis", number> = { football: 0, tennis: 0 };
+  const issued: Record<"football" | "tennis" | "basketball", number> = { football: 0, tennis: 0, basketball: 0 };
   // v3.2 §3.1 — per-sport chronological queues. The old SHARED slice(0, 240)
   // over the merged list starved football forever: 30 days of tennis fixtures
   // (oldest-first) consumed every slot before football's 14-day window was
   // ever reached. Each sport now owns its full queue and its own cap.
-  const queues: Record<"football" | "tennis", FeedMatch[]> = {
+  const queues: Record<"football" | "tennis" | "basketball", FeedMatch[]> = {
     football: [...pack.football].sort((a, b) => a.startTime.getTime() - b.startTime.getTime()),
     tennis: [...pack.tennis].sort((a, b) => a.startTime.getTime() - b.startTime.getTime()),
+    basketball: [...pack.basketball].sort((a, b) => a.startTime.getTime() - b.startTime.getTime()),
   };
+  // v3.3 §4 — window-derived REAL NBA form: running per-game differential
+  // computed ONLY from games already finished INSIDE the fetched window
+  // (no look-ahead, no standings anachronism). The first 1-2 window games of
+  // a team stay unrated → honest tactical veto with a REAL would-have-been.
+  const nbaForm = new Map<string, { g: number; diff: number; last: Date }>();
   // Pre-fetch REAL closing odds (ESPN pickcenter) for tradable football fixtures.
   const oddsByEvent = new Map<string, Awaited<ReturnType<typeof fetchFootballSummaryOdds>>>();
   const needOdds = pack.football
@@ -322,7 +337,7 @@ async function buildCandidates(
       if (o) oddsByEvent.set(m.espnEventId, o);
     }));
   }
-  for (const sport of ["football", "tennis"] as const) {
+  for (const sport of ["football", "tennis", "basketball"] as const) {
     for (const m of queues[sport]) {
       // v3.2 §3.1 — quota reached for this sport → stop issuing (quota, not veto).
       if (issued[sport] >= caps[sport]) break;
@@ -364,13 +379,95 @@ async function buildCandidates(
       continue;
     }
     const ctx = {
-      id, sport: m.sport as "football" | "tennis", league: m.league, leagueCode: m.leagueCode,
+      id, sport: m.sport as "football" | "tennis" | "basketball", league: m.league, leagueCode: m.leagueCode,
       homeName: m.homeName, awayName: m.awayName, homeRank: m.homeRank ?? null,
       awayRank: m.awayRank ?? null, startTime: m.startTime, status: m.status,
       surface: m.surface ?? null, venue: m.venue ?? null, round: m.round ?? null,
     };
     const rng = mulberry32(hashSeed(m.espnEventId));
     const roll = rng();
+    // v3.3 §4 — Engine 3 (NBA) backfill branch: normal-CDF margin model over
+    // in-window REAL form; same Shadow/Veto honesty as football/tennis.
+    if (m.sport === "basketball") {
+      const normKey = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+      const gk = normKey(m.homeName), ak = normKey(m.awayName);
+      const g = nbaForm.get(gk), a = nbaForm.get(ak);
+      const ready = !!(g && a && g.g >= 2 && a.g >= 2);
+      const DAY_MS = 86400_000;
+      const feats: NbaMatchFeatures = {
+        homeTeam: m.homeName, awayTeam: m.awayName,
+        homeNetRating: g ? g.diff / g.g : 0,
+        awayNetRating: a ? a.diff / a.g : 0,
+        homeBackToBack: g ? m.startTime.getTime() - g.last.getTime() <= 1.2 * DAY_MS : false,
+        awayBackToBack: a ? m.startTime.getTime() - a.last.getTime() <= 1.2 * DAY_MS : false,
+        homeRestDays: g ? Math.floor((m.startTime.getTime() - g.last.getTime()) / DAY_MS) : 7,
+        awayRestDays: a ? Math.floor((m.startTime.getTime() - a.last.getTime()) / DAY_MS) : 7,
+        homeStarOut: false, // no free reliable injury feed — never invented
+        awayStarOut: false,
+      };
+      const { pHomeWin } = nbaWinProbabilities(feats);
+      const favIsHome = pHomeWin >= 1 - pHomeWin;
+      const favWinProb = favIsHome ? pHomeWin : 1 - pHomeWin;
+      const rawPick = {
+        marketKey: "1X2",
+        selection: favIsHome ? "NBA_ML_HOME" : "NBA_ML_AWAY",
+        price: marginPrice(favWinProb, BOOK_MARGIN.basketball),
+        modelProb: round2(favWinProb * 1000) / 1000,
+      };
+      const candidates = ready ? buildNbaProtectedCandidates(feats) : [];
+      if (candidates.length === 0) {
+        if (roll <= COVERAGE && rawPick.price > 0) {
+          vetoes.push({
+            ref: `${m.homeName} vs ${m.awayName}`,
+            reason: ready
+              ? "No NBA candidate cleared the 72% no-loss shield floor"
+              : "Unrated NBA pairing — insufficient in-window form data",
+            category: ready ? "LOW_CONSENSUS" : "TACTICAL_VETO",
+            sport: m.sport, league: m.league, ftScore, startTime: m.startTime,
+            wouldHaveBeen: {
+              marketKey: rawPick.marketKey, selection: rawPick.selection,
+              price: rawPick.price, modelProb: rawPick.modelProb, fixture,
+            },
+          });
+        }
+      } else if (issued.basketball < caps.basketball) {
+        const top = candidates[0];
+        // Model-only blend (identity Platt at backfill time; no NBA sharp
+        // layer) — the SAME 0.65/0.35 treatment football rows get.
+        const quantNoLoss = top.noLossProb;
+        const blended = quantNoLoss;
+        const consensus = Math.round(Math.min(100, Math.max(0, 100 - 0 * 150)) * 10) / 10;
+        const tier = assignConfidenceTier(blended, consensus);
+        const price = marginPrice(top.winProb, BOOK_MARGIN.basketball);
+        if (tier && price > 0) {
+          singles.push({
+            matchId: id, espnEventId: m.espnEventId, sport: "basketball",
+            league: m.league,
+            label: `${m.homeName} vs ${m.awayName} — ${top.marketKey} ${top.selection}`,
+            marketKey: top.marketKey, marketLabel: top.posterLabel, selection: top.selection,
+            modelProb: round2(top.winProb * 1000) / 1000,
+            trueProb: round2(blended * 1000) / 1000,
+            price,
+            evPct: Math.round((top.winProb * price - 1) * 1000) / 10,
+            startTime: m.startTime,
+            fixture: {
+              sport: "basketball", homeScore: m.homeScore ?? 0, awayScore: m.awayScore ?? 0,
+              retired: false, detail: m.detail ?? null,
+            },
+            line: "SHIELD", tier, shieldType: top.shieldType,
+            noLossProb: round2(blended * 1000) / 1000, consensusPct: consensus,
+          });
+          issued.basketball++;
+        }
+      }
+      // Update running REAL form with the actual result (chronological walk).
+      for (const [key, scored] of [[gk, m.homeScore ?? 0], [ak, m.awayScore ?? 0]] as const) {
+        const opp = key === gk ? m.awayScore ?? 0 : m.homeScore ?? 0;
+        const prev = nbaForm.get(key) ?? { g: 0, diff: 0, last: m.startTime };
+        nbaForm.set(key, { g: prev.g + 1, diff: prev.diff + (scored - opp), last: m.startTime });
+      }
+      continue;
+    }
     const f = m.sport === "football"
       ? buildFootballFactory(
           ctx,
@@ -409,7 +506,7 @@ async function buildCandidates(
     const shield = shieldPickForFixture(m, ctx, f, findTeamStat(standings, m.leagueCode, m.homeName), findTeamStat(standings, m.leagueCode, m.awayName));
     if (shield) {
       // v3.2 §3.1 — per-sport quota applies to the shield track as well.
-      const sportKey = shield.sport as "football" | "tennis";
+      const sportKey = shield.sport as "football" | "tennis" | "basketball";
       if (issued[sportKey] >= caps[sportKey]) continue;
       singles.push(shield);
       issued[sportKey]++;
@@ -463,7 +560,7 @@ async function buildCandidates(
         ? cand.evPct
         : Math.round((cand.modelProb * cand.price - 1) * 1000) / 10;
       singles.push({
-        matchId: id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
+        matchId: id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis" | "basketball",
         league: m.league,
         label: `${m.homeName} vs ${m.awayName} — ${cand.marketKey} ${cand.selection}`,
         marketKey: cand.marketKey,
@@ -678,8 +775,8 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
   await setSetting(HISTORY_SEEDED_KEY, seededAt);
   return {
     skipped: false,
-    fixturesFetched: pack.football.length + pack.tennis.length,
-    matchesUpserted: pack.football.length + pack.tennis.length,
+    fixturesFetched: pack.football.length + pack.tennis.length + pack.basketball.length,
+    matchesUpserted: pack.football.length + pack.tennis.length + pack.basketball.length,
     signalsSeeded: won + lost + void_,
     won, lost, void: void_, accas, vetoes: vetoCount, posters,
     notes: pack.notes, seededAt,

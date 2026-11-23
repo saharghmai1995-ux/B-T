@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 /* ---------- helpers ---------- */
 
 const sportGlyph = (sport: string | null): string =>
-  sport === "tennis" ? "🎾" : sport === "football" ? "⚽" : "—";
+  sport === "tennis" ? "🎾" : sport === "football" ? "⚽" : sport === "basketball" ? "🏀" : "—";
 
 /**
  * Normalize a 0–1 fraction rate to percent (defensive: values already
@@ -1140,8 +1140,11 @@ export default function VerifiedLedgerView({ state }: { state: AppStatePayload }
                         <div className="truncate text-slate-300" dir="ltr" title={betline}>
                           {betline}
                         </div>
+                        {/* v3.3 §3.3 — the odds display "@ 2.86" is BANNED from the
+                            Shadow Ledger table: it showed 1xBet-estimated prices as if
+                            they were real. Calibrated probability + verdict + FT only. */}
                         <div className="num mt-0.5 text-[9px] text-slate-500" dir="ltr">
-                          @ {v.price != null ? v.price.toFixed(2) : "—"}
+                          CAL PROB {v.modelProb != null ? `${(v.modelProb * 100).toFixed(1)}%` : "—"}
                         </div>
                       </td>
                       <td className="hidden max-w-[230px] px-2 py-2 lg:table-cell" title={v.reason}>

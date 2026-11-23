@@ -14,20 +14,30 @@ import {
   FOOTBALL_LEAGUES, getOddsFeedStats, type LiveOddsRow,
 } from "@/core/bookmakers/odds-feed";
 import { getOddsApiKey, getOddsPapiApiKey, getSetting, SETTING_KEYS } from "./settings";
+import { fetchNbaUpcoming, fetchNbaStandings, fetchNbaLastGameMap, nbaScheduleFeatures, type NbaTeamRating } from "@/core/bookmakers/nba-feed";
 
 export interface GatheredPack extends FeedPack {
   standings: Record<string, TeamStat[]>;
   liveOdds: Map<string, LiveOddsRow>;
+  /** v3.3 — REAL NBA standings differentials + schedule B2B map. */
+  nbaRatings: NbaTeamRating[];
+  nbaLastGames: Map<string, Date>;
 }
 
 export async function gatherFeed(): Promise<GatheredPack> {
   const notes: string[] = [];
 
-  const [football, tennis] = await Promise.all([
-    fetchFootballFeed(), fetchTennisFeed(),
+  const [football, tennis, basketball] = await Promise.all([
+    fetchFootballFeed(), fetchTennisFeed(), fetchNbaUpcoming(),
   ]);
   if (football.length === 0) notes.push("ESPN football scoreboard unreachable this run");
   if (tennis.length === 0) notes.push("ESPN tennis scoreboard unreachable this run");
+  // v3.3 §4 — Engine 3 (NBA): keyless scoreboard + standings feed the
+  // normal-CDF margin engine with REAL differentials and REAL schedule B2B.
+  const nbaRatings: NbaTeamRating[] = await fetchNbaStandings();
+  if (basketball.length === 0) notes.push("ESPN NBA scoreboard unreachable this run");
+  else notes.push(`NBA pre fixtures: ${basketball.length} · standings rows: ${nbaRatings.length}`);
+  const nbaLastGames = await fetchNbaLastGameMap(3);
 
   // Standings only for leagues that actually have upcoming fixtures (cap 8).
   const upcomingLeagues = [...new Set(
@@ -73,11 +83,48 @@ export async function gatherFeed(): Promise<GatheredPack> {
 
   return {
     fetchedAt: new Date(),
-    football, tennis,
-    degraded: football.length === 0 && tennis.length === 0,
+    football, tennis, basketball,
+    degraded: football.length === 0 && tennis.length === 0 && basketball.length === 0,
     notes,
     standings,
     liveOdds,
+    nbaRatings,
+    nbaLastGames,
+  };
+}
+
+/** v3.3 — REAL NBA features for ONE fixture (standings + schedule). */
+export function buildNbaFeatures(
+  pack: GatheredPack,
+  m: { homeName: string; awayName: string; startTime: Date },
+): { features: import("@/engines/nba/nba-selector").NbaMatchFeatures; completeness: number; notes: string[] } | null {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+  const find = (t: string) => pack.nbaRatings.find((r) => norm(r.team) === norm(t));
+  const home = find(m.homeName);
+  const away = find(m.awayName);
+  if (!home || !away) return null; // unrated pairing — the gate vetoes it
+  const homeSched = nbaScheduleFeatures(m.homeName, m.startTime, pack.nbaLastGames);
+  const awaySched = nbaScheduleFeatures(m.awayName, m.startTime, pack.nbaLastGames);
+  const notes = [
+    `NetRtg diff: ${home.team} ${(home.differential >= 0 ? "+" : "") + home.differential.toFixed(1)} vs ${away.team} ${(away.differential >= 0 ? "+" : "") + away.differential.toFixed(1)}`,
+    homeSched.backToBack ? `${home.team}: back-to-back` : `${home.team}: ${homeSched.restDays}d rest`,
+    awaySched.backToBack ? `${away.team}: back-to-back` : `${away.team}: ${awaySched.restDays}d rest`,
+  ];
+  return {
+    features: {
+      homeTeam: m.homeName,
+      awayTeam: m.awayName,
+      homeNetRating: home.differential,
+      awayNetRating: away.differential,
+      homeBackToBack: homeSched.backToBack,
+      awayBackToBack: awaySched.backToBack,
+      homeRestDays: homeSched.restDays,
+      awayRestDays: awaySched.restDays,
+      homeStarOut: false, // no free reliable injury feed — never invented
+      awayStarOut: false,
+    },
+    completeness: 1, // REAL standings + REAL schedule for both sides
+    notes,
   };
 }
 

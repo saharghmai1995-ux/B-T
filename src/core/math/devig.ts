@@ -88,7 +88,8 @@ export function marginPrice(prob: number, margin: number): number {
 }
 
 /** Real 1xBet-style margin per sport (public long-run average). */
-export const BOOK_MARGIN: Record<"football" | "tennis", number> = {
+export const BOOK_MARGIN: Record<"football" | "tennis" | "basketball", number> = {
   football: 1.055,
   tennis: 1.052,
+  basketball: 1.055, // v3.3 — NBA main lines carry the same ~5.5% average vig
 };

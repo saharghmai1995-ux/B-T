@@ -42,10 +42,11 @@ const NAV: Array<{ key: ViewKey; label: string; sub: string; short: string; icon
   // git-ignored .env.local and channel config lives in the Telegram studio.
 ];
 
-const SPORTS: Array<{ key: "all" | "football" | "tennis"; label: string }> = [
+const SPORTS: Array<{ key: "all" | "football" | "tennis" | "basketball"; label: string }> = [
   { key: "all", label: "🌐 همه" },
   { key: "football", label: "⚽ فوتبال" },
   { key: "tennis", label: "🎾 تنیس" },
+  { key: "basketball", label: "🏀 NBA" },
 ];
 
 /** Real live system clock — fixes the frozen 00:00:00 footer bug. */
@@ -110,6 +111,7 @@ export default function AppShell() {
   const openCount = state?.openSignals.length ?? 0;
   const footballOpen = state?.openSignals.filter((s) => s.sport === "football").length ?? 0;
   const tennisOpen = state?.openSignals.filter((s) => s.sport === "tennis").length ?? 0;
+  const basketballOpen = state?.openSignals.filter((s) => s.sport === "basketball").length ?? 0;
 
   /* v3.2 — Engine Health card values: PURE HIT-RATE only (bankroll/units purged). */
   const engineLab = state?.agentLab;
@@ -288,7 +290,7 @@ export default function AppShell() {
                 </span>
               </span>
               <span className="num text-[9px] leading-3 text-emerald-400/80" dir="ltr">
-                FB {footballOpen} · TN {tennisOpen}
+                FB {footballOpen} · TN {tennisOpen} · NBA {basketballOpen}
               </span>
             </button>
           </div>
@@ -345,7 +347,7 @@ export default function AppShell() {
                   </div>
                 </div>
                 <div className="num mt-2 text-[10px] text-muted-foreground" dir="ltr">
-                  FB {footballOpen} + TN {tennisOpen}
+                  FB {footballOpen} + TN {tennisOpen} + NBA {basketballOpen}
                 </div>
                 <div className="mt-2 border-t border-slate-800/70 pt-2">
                   <LiveClock className="text-[11px] text-muted-foreground" />

@@ -52,7 +52,8 @@ import { fmtDateTimeFa, lineLabel } from "@/lib/api-types";
 import type { AppStatePayload } from "@/lib/api-types";
 import { officialBetLine, marketFa } from "@/lib/markets";
 import { cn } from "@/lib/utils";
-import QuantumTelemetryCore from "@/components/QuantumTelemetryCore";
+import CinematicQuantumCore3D from "@/components/CinematicQuantumCore3D";
+import { isStrictlyUpcoming, isSameTehranDay } from "@/lib/format";
 import {
   Target,
   ShieldCheck,
@@ -248,6 +249,7 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
 
   const fb = statOf(m.sportStats, "football");
   const tn = statOf(m.sportStats, "tennis");
+  const bb = statOf(m.sportStats, "basketball"); // v3.3 — NBA engine card
 
   /* ---- v3.1 SuperAgent KPI values (every agentLab field optional-guarded) ---- */
   const pureWinRate = lab ? lab.pureWinRate * 100 : m.winRate;
@@ -315,12 +317,17 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
       .map(([, v]) => v);
   }, [settledSorted]);
 
-  /* ---- Pick of the Day: STRICTLY today in Asia/Tehran (inline day-key) ---- */
+  /* ---- Pick of the Day: STRICTLY today + STRICTLY upcoming (v3.3 §2) ---- */
   const pick = useMemo(() => {
     const todayKey = tehranDayKey(new Date());
     if (!todayKey) return null;
+    // v3.3 — hard double gate: same Tehran day AND kickoff > now + 5 minutes.
+    // Yesterday's (or 4-days-later) matches can NEVER appear as the golden card.
     const todays = state.openSignals.filter(
-      (s) => s.dayKey === todayKey || tehranDayKey(s.startTime) === todayKey,
+      (s) =>
+        (s.dayKey === todayKey || tehranDayKey(s.startTime) === todayKey) &&
+        isSameTehranDay(s.startTime) &&
+        isStrictlyUpcoming(s.startTime),
     );
     if (todays.length === 0) return null;
     // SHIELD first, then SINGLE_EV; best score = noLossProb ?? modelProb
@@ -336,7 +343,7 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
   const recent = state.settledSignals.slice(0, 48);
 
   const openPickSport = (sport: string) => {
-    setSportFilter(sport === "tennis" ? "tennis" : "football");
+    setSportFilter(sport === "tennis" ? "tennis" : sport === "basketball" ? "basketball" : "football");
     setView("signals");
   };
 
@@ -349,13 +356,17 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
 
   return (
     <div className="space-y-4" data-testid="overview-view">
-      {/* ============ Module 1 — QuantumTelemetryCore (WebGL-free, v3.2) ============ */}
+      {/* ============ Module 1 — CinematicQuantumCore3D (interactive 3D stage, v3.3) ============ */}
       <section aria-label="موتور سوپرایجنت موازی" className="relative">
-        <QuantumTelemetryCore
+        <CinematicQuantumCore3D
           footballScanned={state.matches.filter((mt) => mt.sport === "football").length}
           tennisScanned={state.matches.filter((mt) => mt.sport === "tennis").length}
-          activeFootballPicks={state.openSignals.filter((s) => s.sport === "football").length}
-          activeTennisPicks={state.openSignals.filter((s) => s.sport === "tennis").length}
+          nbaScanned={state.matches.filter((mt) => mt.sport === "basketball").length}
+          activePicks={{
+            football: state.openSignals.filter((s) => s.sport === "football").length,
+            tennis: state.openSignals.filter((s) => s.sport === "tennis").length,
+            nba: state.openSignals.filter((s) => s.sport === "basketball").length,
+          }}
           winRatePct={pureWinRate}
           noLossRatePct={telemetryNoLossRate}
           brierScore={lab?.brier ?? 0}
@@ -429,10 +440,11 @@ export default function OverviewView({ state }: { state: AppStatePayload }) {
         )}
       </div>
 
-      {/* ============ Module 3 — Sport split panel ============ */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2" data-testid="overview-sport-split">
+      {/* ============ Module 3 — Sport split panel (v3.3: football + tennis + NBA) ============ */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="overview-sport-split">
         <SportSplitCard sport="football" label="فوتبال" stat={fb} />
         <SportSplitCard sport="tennis" label="تنیس" stat={tn} />
+        <SportSplitCard sport="basketball" label="NBA" stat={bb} />
       </div>
 
       {/* ============ Module 4 — Pick of the Day (سیگنال طلایی امروز) ============ */}

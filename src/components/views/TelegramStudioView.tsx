@@ -588,6 +588,26 @@ function drawBallIcon(
     ctx.beginPath();
     ctx.arc(x + r * 0.85, y + r * 0.5, r * 0.9, Math.PI * 1.15, Math.PI * 1.85);
     ctx.stroke();
+  } else if (sport === "basketball") {
+    // v3.3 §4 — basketball = orange ball with the classic crossed seams.
+    ctx.fillStyle = "#E8722C";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(15,23,42,0.8)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - r, y);
+    ctx.lineTo(x + r, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x, y + r);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y - r * 1.45, r * 1.15, Math.PI * 0.3, Math.PI * 0.7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y + r * 1.45, r * 1.15, Math.PI * 1.3, Math.PI * 1.7);
+    ctx.stroke();
   } else {
     // central pentagon + five spokes — classic football look
     ctx.fillStyle = "rgba(15,23,42,0.82)";
@@ -1989,12 +2009,12 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
               </label>
             </div>
             {showAddForm && (
-              <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_72px_100px_auto]">
+              <div className="grid grid-cols-[auto_1fr_auto] items-center gap-1.5 min-w-0">
                 <Input
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
                   placeholder="عنوان اسلات — مثلاً سیگنال تنیس عصرگاهی"
-                  className="h-8 min-w-0 border-slate-800 bg-secondary/50 text-xs"
+                  className="col-span-3 h-8 min-w-0 border-slate-800 bg-secondary/50 text-xs"
                 />
                 <Input
                   value={newTime}

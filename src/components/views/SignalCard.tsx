@@ -106,7 +106,7 @@ export function SignalCard({ s, rank, naming = "1xbet" }: { s: AppSignal; rank?:
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span aria-hidden className="text-base leading-none">
-                {s.sport === "tennis" ? "🎾" : "⚽"}
+                {s.sport === "tennis" ? "🎾" : s.sport === "basketball" ? "🏀" : "⚽"}
               </span>
               <span className="break-words text-sm font-bold">{s.matchInfo}</span>
               {rank === 0 && (

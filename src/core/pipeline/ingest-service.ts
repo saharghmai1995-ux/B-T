@@ -6,7 +6,8 @@
 
 import { db } from "@/lib/db";
 import type { FeedMatch, MatchContext, TeamStat } from "@/core/types";
-import { gatherFeed, findTeamStat, leagueAverageGoals, type GatheredPack } from "./feed-gatherer";
+import { gatherFeed, findTeamStat, leagueAverageGoals, buildNbaFeatures, type GatheredPack } from "./feed-gatherer";
+import { computeAutoVetoLeagues } from "@/core/agents/calibration";
 import { fetchEspnPublicEventOdds } from "@/core/bookmakers/odds-feed";
 import { buildFootballFactory, buildTennisFactory } from "./signal-factory";
 import { lockSignal } from "@/core/ledger/sha256-chain";
@@ -88,14 +89,18 @@ async function settleFinished(
   pack: GatheredPack,
   idByEspn: Map<string, { id: string; sport: string }>,
 ): Promise<number> {
-  const finished = [...pack.football, ...pack.tennis].filter(
+  // v3.3 — finished NBA fixtures settle through the same REAL-score loop.
+  const finished = [...pack.football, ...pack.tennis, ...pack.basketball].filter(
     (m) => m.status === "post" && m.homeScore != null && m.awayScore != null,
   );
   let settled = 0;
   for (const m of finished) {
     const ref = idByEspn.get(m.espnEventId);
     if (!ref) continue;
-    const open = await db.signal.findMany({ where: { matchId: ref.id, status: "OPEN" } });
+    // v3.3 §2 — PENDING_SETTLEMENT rows (stale-OPEN sweep) settle here too.
+    const open = await db.signal.findMany({
+      where: { matchId: ref.id, status: { in: ["OPEN", "PENDING_SETTLEMENT"] } },
+    });
     const fixture = {
       sport: ref.sport, homeScore: m.homeScore!, awayScore: m.awayScore!,
       retired: m.retired === true,
@@ -187,7 +192,7 @@ async function settleArb(sig: { id: string; stake: number; arbBooks: string | nu
 
 /** Generate quotes + Line-1 signals + v3.1 Push-Shield ensembles for upcoming fixtures. */
 async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; singles: number; shields: number; shieldVetoes: number }> {
-  const preAll = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
+  const preAll = [...pack.football, ...pack.tennis, ...pack.basketball].filter((m) => m.status === "pre");
   // v2.7.1 hotfix §2.5 — dedicated tennis budget: the old shared slice(0, 90)
   // was consumed by football alone (899 tennis pre fixtures sat beyond the
   // cap forever), so the 17 upcoming pre ties never reached the selector.
@@ -196,7 +201,13 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
     .filter((m) => m.sport === "tennis")
     .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
     .slice(0, 50);
-  const upcoming = [...footballUp, ...tennisUp];
+  // v3.3 §4 — Engine 3 (NBA): independent daily queue (the NBA calendar is
+  // 10-15 pre games per day during the tennis off-season).
+  const basketballUp = preAll
+    .filter((m) => m.sport === "basketball")
+    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+    .slice(0, 16);
+  const upcoming = [...footballUp, ...tennisUp, ...basketballUp];
   let quotes = 0;
   let singles = 0;
   const existing = await db.signal.findMany({
@@ -205,15 +216,53 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
   });
   const have = new Set(existing.map((s) => `${s.matchId}|${s.marketKey}|${s.selection}`));
   const bank = await currentBankroll();
+  // v3.3 §3.2 — Calibration Scientist auto-veto: a league enters the veto set
+  // ONLY with >= 12 settled matches AND win rate < 62% (hard sample-size gate).
+  const settledForVeto = await db.signal.findMany({
+    where: { status: { in: ["WON", "LOST", "VOID"] } },
+    select: { status: true, match: { select: { league: true } } },
+  });
+  const autoVetoStats = computeAutoVetoLeagues(
+    settledForVeto.map((r) => ({
+      league: r.match.league,
+      status: r.status as "WON" | "LOST" | "VOID",
+    })),
+  );
+  const autoVetoLeagues = new Set(autoVetoStats.map((x) => x.league));
   let espnTennisOddsFetches = 0; // v2.7.1 — layer-3 public-odds budget per run
   // v3.1 — SuperAgent-3 calibration context (Platt + adaptive weights), ONCE per run.
   const calib = await loadCalibrationContext();
   let shields = 0;
   let shieldVetoes = 0;
 
-  for (const m of upcoming.slice(0, 90)) {
+  for (const m of upcoming.slice(0, 120)) {
     const id = await upsertMatch(m);
     const ctx = ctxOf(m, id);
+    // v3.3 §3.2 — dynamic toxic-league guard: no new signal for auto-vetoed
+    // leagues; one idempotent shadow row documents the decision.
+    if (autoVetoLeagues.has(m.league)) {
+      const autoRef = `AUTO_LEAGUE|${m.league}`;
+      const exists = await db.shadowVeto.findFirst({
+        where: { signalRef: autoRef, category: "AUTO_LEAGUE" },
+        select: { id: true },
+      });
+      if (!exists) {
+        const stat = autoVetoStats.find((x) => x.league === m.league);
+        await db.shadowVeto.create({
+          data: {
+            signalRef: autoRef,
+            category: "AUTO_LEAGUE",
+            reason: `Dynamic league veto "${m.league}": ${stat?.settled ?? 0} settled matches at ${stat?.winRatePct ?? 0}% win rate (<62%) — passed the 12-match gate`,
+            sport: m.sport,
+            league: m.league,
+            repMatch: `${m.homeName} vs ${m.awayName}`,
+            verdict: "UNKNOWN",
+            savedUnits: 0,
+          },
+        });
+      }
+      continue;
+    }
     if (m.sport === "football") {
       const sh = findTeamStat(pack.standings, m.leagueCode, m.homeName);
       const sa = findTeamStat(pack.standings, m.leagueCode, m.awayName);
@@ -237,7 +286,7 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: ref, statHome: sh, statAway: sa, calib });
       if (shield.issued === "SIGNAL") shields++;
       if (shield.issued === "VETO") shieldVetoes++;
-    } else {
+    } else if (m.sport === "tennis") {
       // v2.7.1 hotfix §2.5 — keyless ESPN Core PUBLIC per-event odds feed the
       // tennis selector directly (layer 3): when Layers 1/2 carry no row for
       // this pairing, the public market anchor still produces LIVE-priced
@@ -268,6 +317,15 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
       }
       // v3.1 — parallel SuperAgent ensemble → Push-Shield signal / shadow veto.
       const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: null, statHome: null, statAway: null, calib });
+      if (shield.issued === "SIGNAL") shields++;
+      if (shield.issued === "VETO") shieldVetoes++;
+    } else if (m.sport === "basketball") {
+      // v3.3 §4 — Engine 3: normal-CDF margin model over REAL standings.
+      const feats = buildNbaFeatures(pack, m);
+      const shield = await generateShieldForFixture({
+        ctx, quotes: [], refOdds: null, statHome: null, statAway: null, calib,
+        nba: feats ?? undefined,
+      });
       if (shield.issued === "SIGNAL") shields++;
       if (shield.issued === "VETO") shieldVetoes++;
     }
@@ -318,7 +376,7 @@ async function currentBankroll(): Promise<number> {
 /** Line 2 — build the best 2-leg acca from fresh anchors (independent matches). */
 async function buildAccas(pack: GatheredPack): Promise<number> {
   const anchors: Array<{ matchId: string; espnEventId: string; label: string; marketKey: string; selection: string; price: number; prob: number }> = [];
-  const preAll = [...pack.football, ...pack.tennis].filter((m) => m.status === "pre");
+  const preAll = [...pack.football, ...pack.tennis, ...pack.basketball].filter((m) => m.status === "pre");
   const footballUp = preAll.filter((m) => m.sport === "football").slice(0, 40);
   const tennisUp = preAll
     .filter((m) => m.sport === "tennis")

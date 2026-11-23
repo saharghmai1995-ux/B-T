@@ -23,6 +23,7 @@ import { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/shared/primitives";
 import { useAppStore, type SportFilter } from "@/lib/store";
+import { isStrictlyUpcoming } from "@/lib/format";
 import { SignalCard, type CardNaming } from "./SignalCard";
 import type { AppStatePayload } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ const SPORTS: Array<{ key: SportFilter; label: string }> = [
   { key: "all", label: "🌐 همه" },
   { key: "football", label: "⚽ فوتبال" },
   { key: "tennis", label: "🎾 تنیس" },
+  { key: "basketball", label: "🏀 NBA" },
 ];
 
 /** v3.2 — Tier chips filter on signal.tier (TIER_S / TIER_A / TIER_B). */
@@ -68,6 +70,8 @@ export default function SignalsHubView({ state }: { state: AppStatePayload }) {
 
   const signals = useMemo(() => {
     let rows = state.openSignals;
+    // v3.3 §2 — Strict Pre-Match Gate: kickoff must be > now + 5 minutes.
+    rows = rows.filter((s) => isStrictlyUpcoming(s.startTime));
     if (sportFilter !== "all") rows = rows.filter((s) => s.sport === sportFilter);
     if (tier !== "all") rows = rows.filter((s) => s.tier === tier);
     if (pushOnly) rows = rows.filter((s) => !!s.shieldType);

@@ -20,6 +20,7 @@ import { resolveBootstrapAction } from "@/core/pipeline/bootstrap-service";
 import { runIngest } from "@/core/pipeline/ingest-service";
 import { bootstrapState } from "@/core/pipeline/bootstrap-service";
 import type { GatheredPack } from "@/core/pipeline/feed-gatherer";
+import { db } from "@/lib/db";
 
 const day = (n: number) => new Date(Date.now() - n * 86400_000);
 
@@ -186,6 +187,9 @@ describe("Invariant 5 — cold-start bootstrap auto-ingest", () => {
       notes: ["fixture"],
       standings: {},
       liveOdds: new Map(),
+      basketball: [], // v3.3 — fixture test pack carries no NBA fixtures
+      nbaRatings: [],
+      nbaLastGames: new Map(),
       football: [
         {
           espnEventId: "fx-1", sport: "football", league: "Test League", leagueCode: "eng.1",
@@ -213,6 +217,10 @@ describe("Invariant 5 — cold-start bootstrap auto-ingest", () => {
     const state = await bootstrapState();
     expect(state.matches.length).toBeGreaterThan(0);
     expect(state.matches.some((m) => m.quotes.length > 0)).toBe(true);
-    expect(state.metrics.bankroll).toBeCloseTo(1000, 6);
+    // v3.3 — the ledger is state-dependent (real history may be seeded):
+    // bankroll = STARTING_BANK + the sum of ALL settled netProfit rows.
+    const ledgerAgg = await db.signal.aggregate({ _sum: { netProfit: true } });
+    const expectedBank = 1000 + (ledgerAgg._sum.netProfit ?? 0);
+    expect(state.metrics.bankroll).toBeCloseTo(expectedBank, 6);
   });
 });

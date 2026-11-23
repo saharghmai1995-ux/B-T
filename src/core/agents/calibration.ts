@@ -254,3 +254,41 @@ export function computeEnsembleWeights(
   }
   return { wQuant, wCoach, wMarket, marketAvailable, platt };
 }
+
+/**
+ * v3.3 §3.2 — Calibration Scientist league auto-veto (HARD GATE).
+ * No league may enter `autoVetoLeagues` unless it holds AT LEAST 12 settled
+ * matches AND a win rate below 62%. This replaces the old aggressive
+ * loss-share heuristic that caused the −6.9pp shadow lift (31 missed wins
+ * vs 20 saved losses): small samples can never veto again.
+ */
+export interface LeagueSettledRow {
+  league: string;
+  status: "WON" | "LOST" | "VOID";
+}
+
+export const AUTO_VETO_MIN_SETTLED = 12;
+export const AUTO_VETO_MAX_WIN_RATE = 0.62;
+
+export function computeAutoVetoLeagues(
+  rows: LeagueSettledRow[],
+  minSettled: number = AUTO_VETO_MIN_SETTLED,
+  maxWinRate: number = AUTO_VETO_MAX_WIN_RATE,
+): Array<{ league: string; settled: number; winRatePct: number }> {
+  const byLeague = new Map<string, { settled: number; wins: number }>();
+  for (const r of rows) {
+    if (!r.league) continue;
+    const e = byLeague.get(r.league) ?? { settled: 0, wins: 0 };
+    if (r.status !== "VOID") e.settled += 1;
+    if (r.status === "WON") e.wins += 1;
+    byLeague.set(r.league, e);
+  }
+  return [...byLeague.entries()]
+    .filter(([, e]) => e.settled >= minSettled && e.wins / e.settled < maxWinRate)
+    .map(([league, e]) => ({
+      league,
+      settled: e.settled,
+      winRatePct: Math.round((e.wins / e.settled) * 1000) / 10,
+    }))
+    .sort((a, b) => a.winRatePct - b.winRatePct);
+}

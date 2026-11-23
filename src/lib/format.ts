@@ -51,3 +51,19 @@ export function isSameTehranDay(isoDate: string | number | Date | null | undefin
   });
   return fmt.format(d) === fmt.format(now);
 }
+
+/**
+ * v3.3 §2 — Strict Pre-Match Gate: a pick is ACTIVE only when its kickoff is
+ * MORE THAN 5 MINUTES in the future. Past-dated matches can NEVER appear as
+ * active picks in Predictions Hub / Pick of the Day again.
+ */
+const FIVE_MIN_MS = 5 * 60_000;
+
+export function isStrictlyUpcoming(
+  kickoffAt: string | number | Date | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (kickoffAt == null) return false;
+  const kickoffMs = new Date(kickoffAt).getTime();
+  return Number.isFinite(kickoffMs) && kickoffMs > nowMs + FIVE_MIN_MS;
+}

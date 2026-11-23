@@ -9,6 +9,7 @@ import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
+import { sweepStaleOpenPicks } from "./active-picks-service";
 import {
   seedRealHistory, runTennisSeedBackground, HISTORY_SEEDED_KEY, TENNIS_SEEDED_KEY, type HistorySeedSummary,
 } from "./real-history-backfill";
@@ -203,6 +204,9 @@ async function toAppSignals(rows: Awaited<ReturnType<typeof fetchSignals>>): Pro
   }));
 }
 
+// v3.3 — PENDING_SETTLEMENT rows are in the settlement queue: not open, not decided.
+const isDecided = (st: string) => st === "WON" || st === "LOST" || st === "VOID";
+
 function fetchSignals() {
   return db.signal.findMany({
     include: {
@@ -227,7 +231,7 @@ function buildAgentLab(
   signals: Awaited<ReturnType<typeof fetchSignals>>,
   vetoes: Array<{ verdict: string | null; savedUnits: number | null; league: string | null; sport: string | null }>,
 ): AgentLab {
-  const settled = signals.filter((s) => s.status !== "OPEN");
+  const settled = signals.filter((s) => isDecided(s.status));
   const calibRows: CalibrationRow[] = settled.map((s) => ({
     modelProb: s.noLossProb ?? s.modelProb,
     trueProb: s.trueProb,
@@ -324,7 +328,7 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   ]);
 
   const settledRows: SettledRow[] = signals
-    .filter((s) => s.status !== "OPEN")
+    .filter((s) => isDecided(s.status))
     .map((s) => ({
       id: s.id, sport: s.sport, league: s.match.league, line: s.line,
       marketKey: s.marketKey, marketLabel: s.marketLabel, selection: s.selection,
@@ -342,7 +346,7 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   const metrics = computeMasterMetrics(settledRows, openRows, { savedCapital, savedCount, missedWinCount });
 
   const matches: AppMatch[] = matchRows.map((m) => ({
-    id: m.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis",
+    id: m.id, espnEventId: m.espnEventId, sport: m.sport as "football" | "tennis" | "basketball",
     league: m.league, leagueCode: m.leagueCode, homeName: m.homeName, awayName: m.awayName,
     homeRank: m.homeRank, awayRank: m.awayRank, startTime: m.startTime,
     status: m.status, surface: m.surface, venue: m.venue, round: m.round,
@@ -355,7 +359,8 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
   }));
 
   const open = signals.filter((s) => s.status === "OPEN");
-  const settled = signals.filter((s) => s.status !== "OPEN");
+  // v3.3 — the settlement queue (PENDING_SETTLEMENT) is hidden from both lists.
+  const settled = signals.filter((s) => isDecided(s.status));
   const [openSignals, settledSignals] = await Promise.all([
     toAppSignals(open), toAppSignals(settled),
   ]);
@@ -466,6 +471,15 @@ export async function ensureBootstrapState(): Promise<AppState> {
     }
   } catch (err) {
     console.error("v3.2 ledger migration failed (contained)", err);
+  }
+  // v3.3 — ONE-TIME migration: 25/25/25 quotas + NBA engine + calibrated vetoes.
+  try {
+    const v33 = await runV33LedgerMigration();
+    if (!v33.skipped) {
+      console.log(`[v3.3] ledger migration: ${v33.purgedSignals} settled rows + ${v33.purgedVetoes} vetoes purged — background reseed fired`);
+    }
+  } catch (err) {
+    console.error("v3.3 ledger migration failed (contained)", err);
   }
   // v2.7.2 hotfix — 30-day tennis backfill runs NON-BLOCKING (background,
   // single-flight): the ESPN range fetch + hundreds of upserts used to run
@@ -613,6 +627,78 @@ export function runV32SeedBackground(): Promise<HistorySeedSummary> {
       .finally(() => { v32SeedInFlight = null; });
   }
   return v32SeedInFlight;
+}
+
+// v3.3 — one-time ledger migration flag (25/25/25 quotas + NBA engine + 22pp
+// superagent-conflict veto + auto-veto league gate).
+const V33_MIGRATION_KEY = "v33LedgerMigrationAt";
+
+/**
+ * v3.3 one-time ledger migration — identical containment contract to v3.2:
+ * purge settled rows + vetoes + posters, stamp flags IMMEDIATELY (the purge
+ * can never re-run), fire the v3.3 reseed in the BACKGROUND.
+ */
+export async function runV33LedgerMigration(opts?: { force?: boolean }): Promise<V32LedgerMigrationSummary> {
+  const ranAt = new Date().toISOString();
+  const done = await getSetting(V33_MIGRATION_KEY);
+  if (done && !opts?.force) {
+    return { skipped: true, purgedSignals: 0, purgedVetoes: 0, ranAt };
+  }
+  let purgedSignals = 0;
+  let purgedVetoes = 0;
+  try {
+    const s = await db.signal.deleteMany({ where: { status: { not: "OPEN" } } });
+    purgedSignals = s.count;
+  } catch (err) {
+    console.error("v3.3 settled-signal purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const v = await db.shadowVeto.deleteMany({});
+    purgedVetoes = v.count;
+  } catch (err) {
+    console.error("v3.3 shadow-veto purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    await db.posterLog.deleteMany({});
+  } catch (err) {
+    console.error("v3.3 poster purge failed (non-fatal)", err);
+  }
+  try {
+    await setSetting(HISTORY_SEEDED_KEY, ranAt);
+    await setSetting(TENNIS_SEEDED_KEY, ranAt);
+  } catch (err) {
+    console.error("v3.3 seed-flag stamping failed", err);
+  }
+  await setSetting(V33_MIGRATION_KEY, ranAt);
+  void runV33SeedBackground();
+  return { skipped: false, purgedSignals, purgedVetoes, ranAt };
+}
+
+let v33SeedInFlight: Promise<HistorySeedSummary> | null = null;
+
+/** v3.3 single-flight background reseed (25/25/25 quotas + NBA backfill). */
+export function runV33SeedBackground(): Promise<HistorySeedSummary> {
+  if (!v33SeedInFlight) {
+    v33SeedInFlight = seedRealHistory({ force: true })
+      .then((summary) => {
+        console.log(
+          `[v3.3] ledger reseed: ${summary.signalsSeeded} seeded (W${summary.won}/L${summary.lost}/V${summary.void}) ` +
+            `· ${summary.vetoes} shadow vetoes from ${summary.fixturesFetched} REAL fixtures (FB+TN+NBA)`,
+        );
+        return summary;
+      })
+      .catch((err) => {
+        console.error("v3.3 ledger reseed failed (background, non-fatal)", err);
+        return {
+          skipped: false, fixturesFetched: 0, matchesUpserted: 0, signalsSeeded: 0,
+          won: 0, lost: 0, void: 0, accas: 0, vetoes: 0, posters: 0,
+          notes: [`background run failed: ${(err as Error).message}`],
+          seededAt: new Date().toISOString(),
+        } satisfies HistorySeedSummary;
+      })
+      .finally(() => { v33SeedInFlight = null; });
+  }
+  return v33SeedInFlight;
 }
 
 /**

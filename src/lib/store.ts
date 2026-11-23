@@ -9,7 +9,8 @@
 import { create } from "zustand";
 
 export type ViewKey = "overview" | "signals" | "lab" | "ledger" | "telegram" | "vault";
-export type SportFilter = "all" | "football" | "tennis";
+// v3.3 — "basketball" (NBA) joins the global sport filter.
+export type SportFilter = "all" | "football" | "tennis" | "basketball";
 
 export interface BetslipItem {
   signalId: string;

@@ -15,6 +15,7 @@ import {
   buildFootballProtectedCandidates,
   buildTennisProtectedCandidates,
 } from "./push-shield-selector";
+import { buildNbaProtectedCandidates, nbaWinProbabilities, type NbaMatchFeatures } from "@/engines/nba/nba-selector";
 import {
   runQuantAgent,
   runCoachAgent,
@@ -89,9 +90,36 @@ export async function generateShieldForFixture(params: {
   statHome: TeamStat | null;
   statAway: TeamStat | null;
   calib: CalibrationContext;
+  /** v3.3 — REAL NBA features (standings differential + schedule B2B/rest). */
+  nba?: { features: NbaMatchFeatures; completeness: number; notes: string[] };
 }): Promise<ShieldOutcome> {
   const { ctx, quotes, refOdds, statHome, statAway, calib } = params;
   try {
+    // v3.3 §4 — Engine 3 (NBA): the quant view comes straight from the
+    // normal-CDF margin model over REAL ESPN standings differentials; no
+    // Dixon-Coles/Markov factory exists for basketball.
+    if (params.nba && ctx.sport === "basketball") {
+      const { pHomeWin } = nbaWinProbabilities(params.nba.features);
+      const nbaQuant = {
+        pHome: pHomeWin,
+        pDraw: 0, // NBA cannot draw (OT counts)
+        pAway: 1 - pHomeWin,
+        pOver2: 0, pExact2: 0, pUnder3: 0, pExact3: 0,
+        completeness: params.nba.completeness,
+        rejects: [] as string[],
+      };
+      const nbaCoach = {
+        tacticalDelta: 0, // B2B/star penalties already live inside the margin model
+        vetoFlags: params.nba.completeness < 0.65 ? ["No standings — unrated NBA pairing"] : [],
+        notes: params.nba.notes,
+      };
+      const nbaCandidates = buildNbaProtectedCandidates(params.nba.features);
+      const nbaWeights = calib.weightsWithoutMarket; // no NBA sharp prior layer yet
+      const nbaVerdict = runEnsemble(ctx, nbaQuant, nbaCoach, calib.platt, nbaWeights, null, nbaCandidates);
+      if (!nbaVerdict) return { issued: null };
+      return await persistShieldVerdict(ctx, nbaVerdict);
+    }
+
     const quant = runQuantAgent(ctx, quotes, statHome, statAway);
     if (!quant) return { issued: null };
 
@@ -131,7 +159,20 @@ export async function generateShieldForFixture(params: {
     const weights = marketPrior ? calib.weightsWithMarket : calib.weightsWithoutMarket;
     const verdict = runEnsemble(ctx, quant, coach, calib.platt, weights, marketPrior, candidates);
     if (!verdict) return { issued: null };
+    return await persistShieldVerdict(ctx, verdict);
+  } catch (err) {
+    // The shield line NEVER blocks the ingest pipeline.
+    console.error("[v3.1] shield ensemble failed:", err);
+    return { issued: null };
+  }
+}
 
+/** v3.3 — shared SHIELD persistence for the football/tennis AND NBA paths. */
+async function persistShieldVerdict(
+  ctx: MatchContext,
+  verdict: NonNullable<ReturnType<typeof runEnsemble>>,
+): Promise<ShieldOutcome> {
+  try {
     // Dedupe: one shield row per match, and veto rows are idempotent.
     const espnEventId = await db.match
       .findUnique({ where: { id: ctx.id }, select: { espnEventId: true } })
@@ -212,8 +253,7 @@ export async function generateShieldForFixture(params: {
     });
     return { issued: "VETO", reason: verdict.vetoReason };
   } catch (err) {
-    // The shield line NEVER blocks the ingest pipeline.
-    console.error("[v3.1] shield ensemble failed:", err);
+    console.error("[v3.1] shield verdict persistence failed:", err);
     return { issued: null };
   }
 }

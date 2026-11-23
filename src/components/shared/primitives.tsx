@@ -192,7 +192,8 @@ export function PriceTag({ price, className }: { price: number; className?: stri
 }
 
 export function SportIcon({ sport, className }: { sport: string; className?: string }) {
-  return <span className={className}>{sport === "tennis" ? "🎾" : "⚽"}</span>;
+  // v3.3 — NBA basketball glyph joins the icon set.
+  return <span className={className}>{sport === "tennis" ? "🎾" : sport === "basketball" ? "🏀" : "⚽"}</span>;
 }
 
 export function HashChip({ hash, onClick }: { hash: string; onClick?: () => void }) {

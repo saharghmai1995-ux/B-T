@@ -109,7 +109,8 @@ export interface AgentLab {
 export interface AppMatch {
   id: string;
   espnEventId: string;
-  sport: "football" | "tennis";
+// v3.3 — basketball (NBA) joins the match sport union.
+  sport: "football" | "tennis" | "basketball";
   league: string;
   leagueCode: string;
   homeName: string;

@@ -28,6 +28,9 @@ export type SettleVerdict = { status: "WON" | "LOST" | "VOID"; factor: number };
  * factor: 1 = full settle, 0.5 = quarter-line half win (honest half stake).
  */
 export function resolveSelection(key: string, sel: string, r: FixtureResult): SettleVerdict {
+  // v3.3 — NBA (basketball) resolution: no draws, OT final scores are REAL
+  // totals; ML requires a strict win, +4.5 alt spread covers with any loss ≤4.
+  if (r.sport === "basketball") return { status: resolveBasketball(key, sel, r), factor: 1 };
   if (r.sport === "tennis") return { status: resolveTennis(key, sel, r), factor: 1 };
   const h = r.homeScore, a = r.awayScore;
   const total = h + a;
@@ -111,6 +114,24 @@ export function resolveSelection(key: string, sel: string, r: FixtureResult): Se
       return { status: total < 3 ? "WON" : "LOST", factor: 1 };
     default:
       return { status: "VOID", factor: 1 };
+  }
+}
+
+/** v3.3 — NBA engine resolution (marketKey@selection vocabulary of nba-selector). */
+function resolveBasketball(key: string, sel: string, r: FixtureResult): SettleVerdict["status"] {
+  const h = r.homeScore, a = r.awayScore;
+  if (h == null || a == null) return "VOID";
+  switch (key) {
+    case "1X2":
+      if (sel === "NBA_ML_HOME") return h > a ? "WON" : "LOST";
+      if (sel === "NBA_ML_AWAY") return a > h ? "WON" : "LOST";
+      return "VOID";
+    case "AH_PLUS_025":
+      if (sel === "NBA_ALT_+4.5_HOME") return h + 4.5 > a ? "WON" : "LOST";
+      if (sel === "NBA_ALT_+4.5_AWAY") return a + 4.5 > h ? "WON" : "LOST";
+      return "VOID";
+    default:
+      return "VOID";
   }
 }
 
