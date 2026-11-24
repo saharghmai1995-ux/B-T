@@ -11,6 +11,8 @@ export const SETTING_KEYS = {
   telegramChatId: "telegramChatId",
   telegramPublicChannelId: "telegramPublicChannelId",
   telegramVipChannelId: "telegramVipChannelId",
+  telegramUpdateOffset: "telegramUpdateOffset",
+  vipAutoApprove: "vipAutoApprove",
   lastTier: "lastTier",
 } as const;
 

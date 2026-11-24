@@ -36,6 +36,7 @@ import type {
   ScheduleSlot,
 } from "@/lib/api-types";
 import ChannelManagerCard from "@/components/views/ChannelManagerCard";
+import VipAccessManagerCard from "@/components/views/VipAccessManagerCard";
 import { NoLossChip, ShieldBadge, TierBadge } from "@/components/shared/primitives";
 import {
   CalendarClock,
@@ -1571,6 +1572,9 @@ export default function TelegramStudioView({ state }: { state: AppStatePayload }
       <div className="min-w-0 space-y-4 xl:col-span-2">
         {/* v2.6 — Telegram connection & PUBLIC/VIP lane manager */}
         <ChannelManagerCard />
+
+        {/* v3.4 — full @Aineobet_bot VIP gate: dedicated links, join requests, kick, live updater */}
+        <VipAccessManagerCard />
 
         <Card className="glass glass-hover p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

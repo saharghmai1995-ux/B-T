@@ -163,3 +163,58 @@ model BroadcastSchedule {
 
   @@index([time])
 }
+
+// v3.4 — VIP access management for @Aineobet_bot.
+// A dedicated single-use (or limited) invite link handed to exactly one
+// subscriber; revocable at any time. Telegram is the source of truth —
+// rows here are the honest audit of what the bot actually created.
+model VipInviteLink {
+  id            String    @id @default(cuid())
+  channelChatId String // e.g. "-1004487154797"
+  link          String    @unique // https://t.me/+...
+  tgLinkId      String? // Telegram invite-link id (revocation target)
+  label         String // dedicated label — subscriber name / purpose
+  memberLimit   Int? // 1 = single-use; null = unlimited
+  expireAt      DateTime? // null = never expires
+  isRevoked     Boolean   @default(false)
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([channelChatId, createdAt])
+}
+
+// v3.4 — join requests captured from the live bot updates stream.
+// Only real Telegram join requests land here; approval/decline is stamped
+// by an actual Bot-API call (never assumed).
+model VipJoinRequest {
+  id            String    @id @default(cuid())
+  channelChatId String
+  userId        Int
+  firstName     String?
+  lastName      String?
+  username      String?
+  bio           String?
+  status        String    @default("PENDING") // PENDING | APPROVED | DECLINED
+  handledAt     DateTime? // stamped ONLY by a confirmed approve/decline call
+  handledBy     String? // "auto" | "admin"
+  createdAt     DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([channelChatId, userId])
+}
+
+// v3.4 — honest event stream of everything the VIP gate saw:
+// join requests, memberships (via link), leaves, kicks, link lifecycle,
+// auto-approvals and admin actions.
+model VipMemberEvent {
+  id            String   @id @default(cuid())
+  channelChatId String
+  kind          String // JOIN_REQUEST | MEMBER_JOINED | MEMBER_LEFT | MEMBER_KICKED | LINK_CREATED | LINK_REVOKED | AUTO_APPROVED | ADMIN_ACTION | UPDATER
+  userId        Int?
+  username      String?
+  firstName     String?
+  detail        String? // free text or compact JSON
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}

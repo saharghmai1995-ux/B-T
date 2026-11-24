@@ -142,5 +142,12 @@ export function startWarmEngine(): void {
       startBroadcastDispatcher();
     })
     .catch((e) => console.warn("[warm-engine] dispatcher boot failed:", (e as Error).message));
+  // v3.4 — the Telegram updater rides the same boot: @Aineobet_bot stays
+  // LIVE (join requests, memberships, commands) without any browser open.
+  void import("@/core/telegram/updater")
+    .then(({ startTelegramUpdater }) => {
+      startTelegramUpdater();
+    })
+    .catch((e) => console.warn("[warm-engine] telegram updater boot failed:", (e as Error).message));
   schedule(FIRST_TICK_DELAY_MS);
 }

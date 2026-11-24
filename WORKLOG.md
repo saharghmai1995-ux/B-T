@@ -5,6 +5,77 @@
 
 ---
 
+## v3.4 — @Aineobet_bot Full VIP Gate (2026-11-24)
+
+**Directive:** «بات متصل — @Aineobet_bot را کامل مدیریت کن. کانال VIP با لینک اختصاصی در دسترس است ولی در این کانال با این ای دی ادمین است.»
+
+### Discovery (all values read live from the real Bot API)
+- Bot `@Aineobet_bot` (id `9147801427`, "NeoBet Bot 🤖") — token verified via `getMe`.
+- VIP channel **`-1004487154797` — "NeoBet VIP 👑"** discovered from `getUpdates`
+  (`my_chat_member` stream); persisted in Setting `telegramVipChannelId`.
+- Bot status inside the VIP channel: **administrator** with
+  `can_invite_users=true`, `can_restrict_members=true`, `can_post_messages=true`
+  (join-request approval on channels rides `can_invite_users`).
+- Channel creator: `Amirkhan_69` (id `102140064`). Live member count: 3.
+
+### §1 — Schema (`prisma/schema.prisma`)
+- `VipInviteLink` — dedicated-link ledger (label, memberLimit, expireAt, isRevoked).
+- `VipJoinRequest` — join requests captured from the live updates stream.
+- `VipMemberEvent` — honest event stream (LINK_CREATED / LINK_REVOKED /
+  JOIN_REQUEST / AUTO_APPROVED / MEMBER_JOINED / MEMBER_LEFT / MEMBER_KICKED /
+  ADMIN_ACTION / ADMIN_ALERT).
+
+### §2 — Bot API primitives (`src/core/telegram/bot-client.ts`)
+- `createChatInviteLink` / `revokeChatInviteLink` (dedicated single-use links).
+- `approveChatJoinRequest` / `declineChatJoinRequest` / `kickChatMember`
+  (ban+unban classic kick, re-join stays possible).
+- `getChatMember` / `getChatMemberCount` / `getChatAdministrators`.
+- `getUpdates` long-poll (25s, own timeout envelope, `allowed_updates`
+  incl. `chat_join_request` + `chat_member`).
+
+### §3 — VIP service (`src/core/telegram/vip-service.ts`)
+- Full management surface: mint/revoke dedicated links, approve/decline join
+  requests, kick member, auto-approve switch (`vipAutoApprove` setting),
+  status aggregation (bot + channel + rights + head-count + admins).
+- Honesty rule preserved: DB rows are stamped ONLY after a confirmed Bot-API
+  result; failures surface verbatim.
+
+### §4 — Live updater (`src/core/telegram/updater.ts`)
+- Self-healing in-process long-poll loop booted with the Warm Engine →
+  **@Aineobet_bot stays fully LIVE without any browser**.
+- Handles: `chat_join_request` (→ DB + optional auto-approve via REAL
+  approveChatJoinRequest), `chat_member`/`my_chat_member` transitions,
+  private commands `/start` `/id` `/help` (real HTML replies).
+- Offset persisted in Setting `telegramUpdateOffset` (survives restarts);
+  mutex prevents concurrent getUpdates (409-Conflict guard, verified).
+
+### §5 — API (`src/app/api/telegram/vip`)
+- `GET` → full gate state (status/links/requests/events/updater heartbeat).
+- `POST` actions: `create_link` `revoke_link` `approve_request`
+  `decline_request` `kick_member` `toggle_auto_approve` `poll_now`
+  `set_channel`.
+
+### §6 — UI (`src/components/views/VipAccessManagerCard.tsx`)
+- New "دروازه VIP" console under the channel manager in Telegram Studio:
+  live rights chips, member count, admin board, auto-approve switch,
+  manual event sweep, kick-by-ID, single-use link minting (1/5/10/∞ uses ×
+  24h/72h/7d/30d/never + admin-approval flag), link ledger with copy/open/
+  revoke, pending join-request queue, event stream.
+
+### Verification (all REAL Bot-API round-trips)
+- `create_link` → `https://t.me/+OLq75ct4s4gxM2E0` (1 use, 24h) minted on
+  Telegram ✅ → `revoke_link` → Telegram-side revoked ✅.
+- `toggle_auto_approve` → ON ✅; `poll_now` → clean (mutex verified — the
+  first attempt reproduced the 409 Conflict, then guarded) ✅.
+- Updater heartbeat in dev.log: `[tg-updater] started — @Aineobet_bot live
+  long-poll every 25s (+1.5s idle)`; offset persisted ✅.
+- agent-browser desktop 1440×900 + mobile 390×844 — VIP gate renders with
+  all rights chips green, zero console errors ✅
+  (`.snapshots/v34-desktop-vipgate.png`, `.snapshots/v34-mobile-vipgate-viewport.png`,
+  `.snapshots/v34-desktop-telegram-studio.png`, `.snapshots/v34-mobile-390-vipgate.png`).
+
+---
+
 ## v3.3.2 — Bookmaker Realism + RCA Patch + Always-Warm Engine (2026-11-24)
 
 **Patch:** `upload/neobet_v332_bookmaker_realism_and_rca_patch.md` — all 5 sections applied.
