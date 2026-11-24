@@ -36,3 +36,28 @@ export async function sweepStaleOpenPicks(nowMs: number = Date.now()): Promise<n
     return 0;
   }
 }
+
+/** Minimal shape the dedupe gate needs (Signal rows already satisfy it). */
+export interface ActivePickLike {
+  matchId: string;
+  noLossProb: number | null;
+}
+
+/**
+ * v3.3.2 §3 — Deduplicate strictly to the ONE highest-confidence card per
+ * unique fixture. Fixtures like `Chapecoense vs Palmeiras` used to emit 3
+ * simultaneous cards (SINGLE_EV + SHIELD + …) into Predictions Hub; now only
+ * the best `noLossProb` card survives. ACCA rows are multi-fixture cards and
+ * are intentionally OUT of this gate (the caller keeps them aside).
+ * Pure function — unit-testable, no DB dependency.
+ */
+export function dedupeOneCardPerFixture<T extends ActivePickLike>(picks: T[]): T[] {
+  const bestPerFixture = new Map<string, T>();
+  for (const p of picks) {
+    const prev = bestPerFixture.get(p.matchId);
+    if (!prev || (p.noLossProb ?? 0) > (prev.noLossProb ?? 0)) {
+      bestPerFixture.set(p.matchId, p);
+    }
+  }
+  return Array.from(bestPerFixture.values());
+}

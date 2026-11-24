@@ -13,6 +13,9 @@ export interface FactoryOutput {
   single: CandidateSignal | null;
   anchors: Array<{ marketKey: string; selection: string; modelProb: number; trueProb: number; price: number }>;
   matrix?: number[][];
+  /** v3.3.2 §4.1 — fitted Dixon-Coles lambdas (football only) feeding the
+   *  OVER_2_0 real-market gate (lambdaHome + lambdaAway >= 2.85). */
+  lambdas?: { lh: number; la: number };
   elo?: { a: number; b: number };
 }
 
@@ -23,7 +26,7 @@ export function buildFootballFactory(
   refOdds: { home?: number; draw?: number; away?: number; over?: number; under?: number; totalLine?: number } | null,
   leagueAvgGoals = 1.35,
 ): FactoryOutput {
-  const { quotes, matrix } = buildFootballQuotes(match, statHome, statAway, refOdds, leagueAvgGoals);
+  const { quotes, matrix, lambdas } = buildFootballQuotes(match, statHome, statAway, refOdds, leagueAvgGoals);
   const single = pickSingleEv(match, quotes);
   const anchors = pickAnchors(match, quotes);
   return {
@@ -31,7 +34,7 @@ export function buildFootballFactory(
       marketKey: q.marketKey, selection: q.selection, modelProb: q.modelProb,
       trueProb: q.trueProb, price: q.price, source: q.source,
     })),
-    single, matrix,
+    single, matrix, lambdas,
     anchors: anchors.map((q) => ({
       marketKey: q.marketKey, selection: q.selection,
       modelProb: q.modelProb, trueProb: q.trueProb, price: q.price,

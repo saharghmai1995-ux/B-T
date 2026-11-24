@@ -119,23 +119,34 @@ export function resolveSelection(key: string, sel: string, r: FixtureResult): Se
 }
 
 /**
- * v3.3.1 — NBA engine resolution (hotfix §1b).
- * Dedicated keys NBA_ML / NBA_ALT_SPREAD settle through the exported
- * `resolveNbaSelection`; the legacy v3.3 vocabulary (1X2 / AH_PLUS_025) is
- * still honoured so already-settled ledger rows never flip status.
- * A half-point +4.5 line can NEVER push.
+ * v3.3.2 §1 — NBA engine resolution (real-bookmaker vocabulary).
+ * Whole-number favourite/underdog handicaps (NBA_HCP_-2/-3/+5/+6) settle
+ * through `resolveNbaSelection` with an HONEST PUSH verdict (exact-margin
+ * win/loss returns the stake — VOID at 1.00, never a fake result). The legacy
+ * v3.3/v3.3.1 vocabulary (1X2 / NBA_ALT_SPREAD +4.5) is still honoured so
+ * already-settled ledger rows never flip status; a half-point +4.5 line can
+ * never push.
  */
+const mapNbaPush = (v: "WON" | "PUSH" | "LOST"): SettleVerdict["status"] =>
+  v === "PUSH" ? "VOID" : v;
+
 function resolveBasketball(key: string, sel: string, r: FixtureResult): SettleVerdict["status"] {
   const h = r.homeScore, a = r.awayScore;
   if (h == null || a == null) return "VOID";
   switch (key) {
     case "NBA_ML":
     case "1X2": // legacy v3.3 rows
-      if (sel === "NBA_ML_HOME" || sel === "NBA_ML_AWAY") return resolveNbaSelection(sel, h, a);
+      if (sel === "NBA_ML_HOME" || sel === "NBA_ML_AWAY") return mapNbaPush(resolveNbaSelection(sel, h, a));
       return "VOID";
-    case "NBA_ALT_SPREAD":
+    case "NBA_HCP_MINUS_2":
+    case "NBA_HCP_MINUS_3":
+    case "NBA_HCP_PLUS_5":
+    case "NBA_HCP_PLUS_6":
+    case "NBA_ALT_SPREAD": // legacy v3.3.1 rows
     case "AH_PLUS_025": // legacy v3.3 rows
-      if (sel === "NBA_ALT_+4.5_HOME" || sel === "NBA_ALT_+4.5_AWAY") return resolveNbaSelection(sel, h, a);
+      if (sel.startsWith("NBA_HCP_") || sel.startsWith("NBA_ALT_+4.5")) {
+        return mapNbaPush(resolveNbaSelection(sel, h, a));
+      }
       return "VOID";
     default:
       return "VOID";
@@ -143,8 +154,25 @@ function resolveBasketball(key: string, sel: string, r: FixtureResult): SettleVe
 }
 
 function resolveTennis(key: string, sel: string, r: FixtureResult): SettleVerdict["status"] {
-  if (r.retired) return "VOID"; // Retirement → void at 1.00 (full match rule)
   const setsA = r.homeScore, setsB = r.awayScore;
+  // v3.3.2 §4.2 — retirement (ret / w/o) settlement rules, patch-exact:
+  //   • TENNIS_SET_PLUS_15 — if the SELECTED player won at least 1 set before
+  //     the retirement (e.g. "6-2, 2-0 ret") → WON; otherwise PUSH (stake
+  //     returned, VOID). A retirement can NEVER settle +1.5 as LOST again.
+  //   • TENNIS_ML + every other market — match not completed → stake
+  //     returned (VOID at 1.00); a half-finished match is never a result.
+  //   Defense in depth: the retirement is detected from BOTH the feed flag
+  //   and the stored result string ("… 0-0 ret" rows the feed flag missed).
+  const retired =
+    r.retired || /\b(ret\.?|retired|walkover|w\/o)\b/i.test(r.detail ?? "");
+  if (retired) {
+    if (key === "TENNIS_SET_PLUS_15") {
+      const isHome = sel.startsWith("HOME");
+      const sideSets = isHome ? setsA : setsB;
+      return (sideSets ?? 0) >= 1 ? "WON" : "VOID";
+    }
+    return "VOID";
+  }
   const winner = setsA > setsB ? "HOME" : setsB > setsA ? "AWAY" : null;
   if (!winner) return "VOID";
   switch (key) {

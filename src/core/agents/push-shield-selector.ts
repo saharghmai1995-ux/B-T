@@ -26,7 +26,14 @@ export type ShieldMarketKey =
   | "UNDER_3_0"
   | "TENNIS_ML"
   | "TENNIS_SET_PLUS_15"
-  | "TENNIS_GAME_HCP";
+  | "TENNIS_GAME_HCP"
+  // v3.3.2 §1 — REAL bookmaker NBA markets (whole-number push-protected lines)
+  | "NBA_ML"
+  | "NBA_HCP_MINUS_2"
+  | "NBA_HCP_MINUS_3"
+  | "NBA_HCP_PLUS_5"
+  | "NBA_HCP_PLUS_6"
+  | "NBA_ALT_SPREAD"; // legacy v3.3.1 rows — settlement only, never issued again
 
 export interface ProtectedMarketCandidate {
   marketKey: ShieldMarketKey;
@@ -51,7 +58,15 @@ export interface FootballShieldInputs {
   pExact2: number;  // P(total == 2)
   pUnder3: number;  // P(total <= 2)
   pExact3: number;  // P(total == 3)
+  /** v3.3.2 §4.1 — fitted engine lambdas (lh+la). OVER_2_0 exists ONLY when
+   *  the total-goals volume clears the 2.85 floor (low-scoring leagues are
+   *  structurally barred from the Over 2.0 push market). */
+  lambdaSum?: number | null;
 }
+
+/** v3.3.2 §4.1 — Over 2.0 real-market gates. */
+export const OVER_2_0_MIN_LAMBDA_SUM = 2.85;
+export const OVER_2_0_MAX_PROB = 0.82; // hard probability cap — no overconfidence
 
 /**
  * Football Poisson-matrix evaluator for Push-Protected & Low-Loss options.
@@ -68,6 +83,15 @@ export function buildFootballProtectedCandidates(
   const dogWin = favIsHome ? pAway : pHome;
   const dcCode = favIsHome ? "1X" : "X2";
   const sideNum = favIsHome ? "1" : "2";
+
+  // v3.3.2 §4.1 — Total Goals: Over 2.0 is signalable ONLY when the fitted
+  // goal volume clears the 2.85 lambda floor; its probability is HARD-CAPPED
+  // at 82% (kills the audited 0-1 losses on TIER S in defensive leagues).
+  const over20Allowed = !(
+    typeof params.lambdaSum === "number" && params.lambdaSum < OVER_2_0_MIN_LAMBDA_SUM
+  );
+  const over20Win = Math.min(pOver2, OVER_2_0_MAX_PROB);
+  const over20NoLoss = Math.min(pOver2 + pExact2, OVER_2_0_MAX_PROB);
 
   const list: ProtectedMarketCandidate[] = [
     // 1. Handicap 0.0 / Draw No Bet (Draw = PUSH, Zero Loss on Draw)
@@ -109,19 +133,23 @@ export function buildFootballProtectedCandidates(
       noLossProb: favWin + pDraw,
       shieldType: "DOUBLE_OUTCOME_SHIELD",
     },
-    // 4. Asian Total Over 2.0 Goals (Exact 2 goals = PUSH)
-    {
-      marketKey: "OVER_2_0",
-      selection: "OVER_2.0",
-      onexbetLabel: `Total Over (2.0) Goals`,
-      betforwardLabel: `Asian Total: Over 2.0 Goals`,
-      posterLabel: `Over 2.0 Goals (Push on 2)`,
-      winProb: pOver2,
-      pushProb: pExact2,
-      lossProb: Math.max(0, 1 - pOver2 - pExact2),
-      noLossProb: pOver2 + pExact2,
-      shieldType: "FULL_PUSH_SHIELD",
-    },
+    // 4. Asian Total Over 2.0 Goals (Exact 2 goals = PUSH) — gated v3.3.2
+    ...(over20Allowed
+      ? [
+          {
+            marketKey: "OVER_2_0" as const,
+            selection: "OVER_2.0",
+            onexbetLabel: `Total Over (2.0) Goals`,
+            betforwardLabel: `Asian Total: Over 2.0 Goals`,
+            posterLabel: `Over 2.0 Goals (Push on 2)`,
+            winProb: over20Win,
+            pushProb: pExact2,
+            lossProb: Math.max(0, 1 - over20NoLoss),
+            noLossProb: over20NoLoss,
+            shieldType: "FULL_PUSH_SHIELD" as const,
+          },
+        ]
+      : []),
     // 5. Asian Total Under 3.0 Goals (Exact 3 goals = PUSH)
     {
       marketKey: "UNDER_3_0",
@@ -185,8 +213,11 @@ export function buildTennisProtectedCandidates(
   const favWin = favIsHome ? winnerHome : winnerAway;
   const dogWin = favIsHome ? winnerAway : winnerHome;
   // +1.5 sets cover probability = 1 − P(opponent sweeps 2-0)
-  const favSetCover = 1 - (favIsHome ? setBet20Away : setBet20Home);
-  const dogSetCover = 1 - (favIsHome ? setBet20Home : setBet20Away);
+  // v3.3.2 §4.2 — calibrated probability HARD-CAPPED at 85%: the audited
+  // "Overconfidence 92.3% on Blinkova" is structurally dead.
+  const SET_PLUS_15_CAP = 0.85;
+  const favSetCover = Math.min(1 - (favIsHome ? setBet20Away : setBet20Home), SET_PLUS_15_CAP);
+  const dogSetCover = Math.min(1 - (favIsHome ? setBet20Home : setBet20Away), SET_PLUS_15_CAP);
 
   const list: ProtectedMarketCandidate[] = [
     {
@@ -293,4 +324,4 @@ export function assignConfidenceTier(
 }
 
 export const shieldSport = (marketKey: ShieldMarketKey): Sport =>
-  marketKey.startsWith("TENNIS_") ? "tennis" : "football";
+  marketKey.startsWith("TENNIS_") ? "tennis" : marketKey.startsWith("NBA_") ? "basketball" : "football";

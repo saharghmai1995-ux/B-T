@@ -21,7 +21,8 @@ export interface MarketNames {
 }
 
 const FOOTBALL_SETTLE = "تسویه: ۹۰ دقیقه زمان قانونی";
-const TENNIS_SETTLE = "تسویه: تکمیل کامل مسابقه (Retirement = ابطال)";
+const TENNIS_SETTLE = "تسویه: تکمیل کامل مسابقه · انصراف = سربه‌سر یا برد +۱.۵ ست";
+const NBA_SETTLE = "تسویه: نتیجه نهایی با وقت اضافه · برد با اختلاف دقیق خط = بازگشت استیک";
 
 const MAP: Record<string, MarketNames> = {
   "1x2": { en: "1X2 Full-Time Result", fa: "نتیجه نهایی ۹۰ دقیقه: برد میزبان / مساوی / برد مهمان", settle: FOOTBALL_SETTLE },
@@ -59,14 +60,22 @@ const MAP: Record<string, MarketNames> = {
   "gamehand_away_+3.5": { en: "Game Handicap: Player B +3.5 Games", fa: "هندیکپ گیم بازیکن دوم: +۳.۵ گیم", settle: TENNIS_SETTLE },
   acca2: { en: "2-Leg Smart Accumulator", fa: "میکس ۲ پایه‌ای از دو مسابقه مستقل", settle: "تسویه: هر دو پایه باید برنده شوند" },
   // v3.1 Push-Shield markets (SuperAgent Hit-Rate Engine)
-  DNB_AH0: { en: "Handicap 0 (Draw No Bet)", fa: "سپر کامل برگشت: مساوی = بازگشت کامل استیک", settle: FOOTBALL_SETTLE },
-  AH_PLUS_025: { en: "Asian Handicap +0.25", fa: "سپر نیمه‌برگشت: مساوی = نصف برد + نصف بازگشت", settle: FOOTBALL_SETTLE },
-  DOUBLE_CHANCE: { en: "Double Chance", fa: "سپر دو نتیجه: دو حالت از سه حالت پوشش داده می‌شود", settle: FOOTBALL_SETTLE },
-  OVER_2_0: { en: "Asian Total Over 2.0 Goals", fa: "سپر برگشت مجموع گل: دقیقاً ۲ گل = بازگشت استیک", settle: FOOTBALL_SETTLE },
-  UNDER_3_0: { en: "Asian Total Under 3.0 Goals", fa: "سپر برگشت مجموع گل: دقیقاً ۳ گل = بازگشت استیک", settle: FOOTBALL_SETTLE },
-  TENNIS_ML: { en: "Match Winner", fa: "برنده مسابقه — برد مستقیم", settle: TENNIS_SETTLE },
-  TENNIS_SET_PLUS_15: { en: "Set Handicap +1.5", fa: "سپر ست: پوشش با برد حداقل یک ست", settle: TENNIS_SETTLE },
+  // v3.3.2 §2 — readable patch subtitles (web cards + Telegram caption).
+  DNB_AH0: { en: "Draw No Bet (0.0)", fa: "برد = برد · مساوی = سربه‌سر (بدون باخت)", settle: FOOTBALL_SETTLE },
+  AH_PLUS_025: { en: "Asian Handicap +0.25", fa: "مساوی = نصف برد + نصف بازگشت استیک", settle: FOOTBALL_SETTLE },
+  DOUBLE_CHANCE: { en: "Double Chance", fa: "برد یا مساوی تیم منتخب", settle: FOOTBALL_SETTLE },
+  OVER_2_0: { en: "Total Goals: Over 2.0", fa: "۳+ گل = برد · دقیقاً ۲ گل = سربه‌سر", settle: FOOTBALL_SETTLE },
+  UNDER_3_0: { en: "Total Goals: Under 3.0", fa: "۰ تا ۲ گل = برد · دقیقاً ۳ گل = سربه‌سر", settle: FOOTBALL_SETTLE },
+  TENNIS_ML: { en: "Match Winner", fa: "برد مستقیم بازیکن", settle: TENNIS_SETTLE },
+  TENNIS_SET_PLUS_15: { en: "Win at Least 1 Set", fa: "کسب حداقل یک ست (هندیکپ +۱.۵ ست)", settle: TENNIS_SETTLE },
   TENNIS_GAME_HCP: { en: "Games Handicap ±3.5", fa: "هندیکپ گیم: اختلاف گیم‌ها با خط ۳.۵", settle: TENNIS_SETTLE },
+  // v3.3.2 §1 — REAL bookmaker NBA markets (whole-number push-protected lines).
+  NBA_ML: { en: "Match Winner", fa: "برد تیم با هر اختلافی (شامل وقت اضافه)", settle: NBA_SETTLE },
+  NBA_HCP_MINUS_2: { en: "Points Handicap (-2)", fa: "برد با ۳+ امتیاز = برد · برد با دقیقاً ۲ امتیاز = سربه‌سر", settle: NBA_SETTLE },
+  NBA_HCP_MINUS_3: { en: "Points Handicap (-3)", fa: "برد با ۴+ امتیاز = برد · برد با دقیقاً ۳ امتیاز = سربه‌سر", settle: NBA_SETTLE },
+  NBA_HCP_PLUS_5: { en: "Points Handicap (+5)", fa: "برد یا باخت زیر ۵ امتیاز = برد · باخت دقیقاً ۵ امتیاز = سربه‌سر", settle: NBA_SETTLE },
+  NBA_HCP_PLUS_6: { en: "Points Handicap (+6)", fa: "برد یا باخت زیر ۶ امتیاز = برد · باخت دقیقاً ۶ امتیاز = سربه‌سر", settle: NBA_SETTLE },
+  NBA_ALT_SPREAD: { en: "Alt Spread +4.5", fa: "بازار قدیمی v3.3.1 — دیگر صادر نمی‌شود", settle: NBA_SETTLE },
 };
 
 const SELECTION_EN: Record<string, string> = {
@@ -125,11 +134,12 @@ export function marketFamilyKey(marketKey: string): string {
   if (marketKey === "dnb" || marketKey === "DNB_AH0") return "Draw No Bet";
   if (marketKey === "AH_PLUS_025") return "Asian Handicap +0.25";
   if (marketKey === "DOUBLE_CHANCE") return "Double Chance";
-  if (marketKey === "OVER_2_0") return "Asian Total Over 2.0";
-  if (marketKey === "UNDER_3_0") return "Asian Total Under 3.0";
+  if (marketKey === "OVER_2_0") return "Total Goals: Over 2.0";
+  if (marketKey === "UNDER_3_0") return "Total Goals: Under 3.0";
   if (marketKey === "TENNIS_ML") return "Match Winner";
-  if (marketKey === "TENNIS_SET_PLUS_15") return "Set Handicap +1.5";
+  if (marketKey === "TENNIS_SET_PLUS_15") return "Win at Least 1 Set";
   if (marketKey === "TENNIS_GAME_HCP") return "Games Handicap";
+  if (marketKey.startsWith("NBA_")) return marketKey === "NBA_ML" ? "Match Winner (NBA)" : "Points Handicap (NBA)";
   if (marketKey === "btts") return "BTTS";
   if (marketKey.startsWith("dc_")) return "Double Chance";
   if (marketKey.startsWith("ah_")) return "Asian Handicap";

@@ -283,7 +283,8 @@ async function generateSignals(pack: GatheredPack): Promise<{ quotes: number; si
         singles += await persistSingle(f.single, bank);
       }
       // v3.1 — parallel SuperAgent ensemble → Push-Shield signal / shadow veto.
-      const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: ref, statHome: sh, statAway: sa, calib });
+      // v3.3.2 §4.1 — fitted lambdas feed the OVER_2_0 real-market gate.
+      const shield = await generateShieldForFixture({ ctx, quotes: f.quotes, refOdds: ref, statHome: sh, statAway: sa, calib, lambdas: f.lambdas ?? null });
       if (shield.issued === "SIGNAL") shields++;
       if (shield.issued === "VETO") shieldVetoes++;
     } else if (m.sport === "tennis") {

@@ -300,11 +300,12 @@ export function runEnsemble(
   };
 
   // Veto: hidden-news divergence, coach flags, low completeness.
-  // v3.3 §3.1 — SuperAgent disagreement veto is CALIBRATED from 15pp to 22pp:
-  // the v3.2 audit showed the shadow shield produced −6.9pp lift (31 missed
-  // wins vs 20 saved losses). Only a HARD conflict above 22pp between Quant
-  // and Coach now sends the fixture to the shadow ledger.
-  const SUPERAGENT_CONFLICT_VETO = 0.22;
+  // v3.3.2 §4.3 — Superagent disagreement veto widened to 24pp (patch-exact):
+  // the v3.2/v3.3 audits showed the 22pp bar still over-vetoed (shadow lift
+  // stayed negative). Only a HARD conflict above 24pp between Quant and Coach
+  // now sends the fixture to the shadow ledger, and the league auto-veto
+  // stays behind its hard sample-size gate (>= 12 settled, win rate < 62%).
+  const SUPERAGENT_CONFLICT_VETO = 0.24;
   let vetoReason: string | null = null;
   const firstCandidate = candidates[0];
   const quantCoachConflict = Math.abs(quantNoLossOf(firstCandidate) - coachNoLossOf(firstCandidate));
@@ -315,7 +316,7 @@ export function runEnsemble(
   } else if (quant.completeness < 0.65) {
     vetoReason = `Data completeness ${(quant.completeness * 100).toFixed(0)}% < 65%`;
   } else if (quantCoachConflict > SUPERAGENT_CONFLICT_VETO) {
-    vetoReason = `Superagent conflict ${(quantCoachConflict * 100).toFixed(0)}pp > 22pp — Quant vs Coach hard disagreement`;
+    vetoReason = `Superagent conflict ${(quantCoachConflict * 100).toFixed(0)}pp > 24pp — Quant vs Coach hard disagreement`;
   }
 
   let best: (ProtectedMarketCandidate & { tier: ConfidenceTier | null; consensusPct: number; noLossProb: number }) | null = null;

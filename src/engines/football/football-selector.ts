@@ -26,6 +26,17 @@ const ANCHOR_PROB = 0.79;
 const ANCHOR_PRICE_MIN = 1.34;
 const ANCHOR_PRICE_MAX = 1.5;
 
+/**
+ * v3.3.2 §4.1 — defensive/low-scoring leagues (patch-exact list): the fitted
+ * Dixon-Coles lambdas are dampened by 0.88x so the Over markets stop
+ * over-promising goals in these competitions.
+ */
+export const LOW_GOAL_LEAGUES = new Set(["mex.1", "eng.2", "bra.1", "arg.1", "esp.2"]);
+export const LOW_GOAL_LAMBDA_SCALE = 0.88;
+export function isLowGoalLeague(leagueCode: string): boolean {
+  return LOW_GOAL_LEAGUES.has(leagueCode);
+}
+
 const LITE = (s?: TeamStat | null): TeamLite | null =>
   s ? { played: s.played, won: s.won, drawn: s.drawn, lost: s.lost, goalsFor: s.goalsFor, goalsAgainst: s.goalsAgainst, form: s.form } : null;
 
@@ -47,9 +58,12 @@ export function buildFootballQuotes(
   const st = stats1x2From(LITE(statHome), LITE(statAway), leagueAvgGoals);
   const statsView = { home: st.home, draw: st.draw, away: st.away };
   const hasStats = !!(statHome && statAway && statHome.played > 0 && statAway.played > 0);
+  // v3.3.2 §4.1 — 0.88x lambda dampening for the patch's defensive leagues.
+  const lambdaScale = isLowGoalLeague(match.leagueCode) ? LOW_GOAL_LAMBDA_SCALE : 1;
   const res = runDixonColes(
     { market1x2, marketTotal, stats1x2: statsView, hasStats, mode: "model" },
     LITE(statHome), LITE(statAway),
+    { lambdaScale },
   );
 
   // Consensus (true) probability: pure market view when real odds exist,
@@ -58,6 +72,7 @@ export function buildFootballQuotes(
   const consensusMatrix = runDixonColes(
     { market1x2, marketTotal, stats1x2: statsView, hasStats, mode: "consensus" },
     LITE(statHome), LITE(statAway),
+    { lambdaScale },
   );
   const quotes: FootballQuote[] = [];
   const margin = BOOK_MARGIN.football;

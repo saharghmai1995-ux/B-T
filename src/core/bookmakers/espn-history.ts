@@ -134,7 +134,10 @@ function parseTennisPast(e: Record<string, unknown>, tour: "atp" | "wta"): FeedM
         ? sa.map((v, i) => `${v}-${sb[i]}`).join(" ")
         : null;
       const notes = ((comp.notes as Array<{ text?: string }> | undefined) ?? []).map((n) => n.text ?? "").join(" ");
-      const retired = /retired|walkover|ret\./i.test(notes) ? true : false;
+      // v3.3.2 §4.2 — retirement detection widened to the patch vocabulary
+      // ("ret" / "w/o" / walkover / retired): the old `ret\.`-only regex
+      // missed the common "… 0-0 ret" ESPN notes and mis-settled +1.5 sets.
+      const retired = /\b(ret\.?|retired|walkover|w\/o)\b/i.test(notes) ? true : false;
       // Real set scores from per-set linescores (3-setters → 2-1, not 2-0).
       let setsA = 0, setsB = 0;
       if (sa.length && sa.length === sb.length) {

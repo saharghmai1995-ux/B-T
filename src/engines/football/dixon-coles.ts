@@ -203,13 +203,25 @@ function ahProb(m: number[][], line: number, side: "HOME" | "AWAY"): number {
   return acc;
 }
 
-/** Full engine run: fitted matrix + every whitelisted football market prob. */
-export function runDixonColes(inp: DCInput, statHome: TeamLite | null, statAway: TeamLite | null): DCResult {
+/** Full engine run: fitted matrix + every whitelisted football market prob.
+ *  v3.3.2 §4.1 — `opts.lambdaScale` dampens the fitted lambdas (0.88x for
+ *  defensive/low-scoring leagues) BEFORE the score matrix is built, so every
+ *  downstream probability (1x2, totals ladder, shield masses) sees the
+ *  dampened goal volume consistently. */
+export function runDixonColes(
+  inp: DCInput,
+  statHome: TeamLite | null,
+  statAway: TeamLite | null,
+  opts?: { lambdaScale?: number },
+): DCResult {
   const st = stats1x2From(statHome, statAway);
   const statsView = inp.stats1x2 ?? { home: st.home, draw: st.draw, away: st.away };
   const statsO2 = summarizeMatrix(buildScoreMatrix(st.lh, st.la)).overLine(2.5);
   const target = resolveTargets(inp, statsView, statsO2);
-  const { lh, la } = fitLambdas(target);
+  const fitted = fitLambdas(target);
+  const scale = opts?.lambdaScale ?? 1;
+  const lh = Math.min(3.8, Math.max(0.08, fitted.lh * scale));
+  const la = Math.min(3.8, Math.max(0.08, fitted.la * scale));
   const matrix = buildScoreMatrix(lh, la);
   const s = summarizeMatrix(matrix);
   const probs: Record<string, number> = {};

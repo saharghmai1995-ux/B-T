@@ -196,6 +196,8 @@ function shieldPickForFixture(
           pHome: quant.pHome, pDraw: quant.pDraw, pAway: quant.pAway,
           pOver2: quant.pOver2, pExact2: quant.pExact2,
           pUnder3: quant.pUnder3, pExact3: quant.pExact3,
+          // v3.3.2 §4.1 — real-market OVER_2_0 gate (lambda floor 2.85).
+          lambdaSum: f.lambdas ? f.lambdas.lh + f.lambdas.la : null,
         })
       : buildTennisProtectedCandidates({
           homePlayer: m.homeName, awayPlayer: m.awayName,
@@ -587,7 +589,19 @@ async function buildCandidates(
 }
 
 /** The one-time REAL backfill entrypoint. */
+let seedRunInFlight: Promise<HistorySeedSummary> | null = null;
+
 export async function seedRealHistory(opts?: { force?: boolean }): Promise<HistorySeedSummary> {
+  // v3.3.2 — GLOBAL single-flight: two concurrent bootstrap requests during a
+  // long rebuild must never run two seed passes in parallel (duplicate rows).
+  if (seedRunInFlight) return seedRunInFlight;
+  seedRunInFlight = seedRealHistoryInner(opts).finally(() => {
+    seedRunInFlight = null;
+  });
+  return seedRunInFlight;
+}
+
+async function seedRealHistoryInner(opts?: { force?: boolean }): Promise<HistorySeedSummary> {
   const existing = await getSetting(HISTORY_SEEDED_KEY);
   const settledAlready = await db.signal.count({ where: { status: { not: "OPEN" } } });
   if (!opts?.force && (existing || settledAlready >= 6)) {
@@ -597,6 +611,7 @@ export async function seedRealHistory(opts?: { force?: boolean }): Promise<Histo
       notes: [], seededAt: existing ?? "",
     };
   }
+  console.log("[v3.3.2] seedRealHistory START (force=" + !!opts?.force + ") — REAL ESPN backfill in progress");
   if (opts?.force) {
     // Rebuild from scratch: wipe the backfilled ledger artifacts (open live signals stay).
     await db.signal.deleteMany({ where: { status: { not: "OPEN" } } });

@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 import { computeMasterMetrics } from "@/core/ledger/ledger-service";
 import type { MasterMetrics, SettledRow, MatchContext } from "@/core/types";
 import { runIngest, tehranDayKey, type IngestSummary } from "./ingest-service";
-import { sweepStaleOpenPicks } from "./active-picks-service";
+import { sweepStaleOpenPicks, dedupeOneCardPerFixture } from "./active-picks-service";
 import {
   seedRealHistory, runTennisSeedBackground, HISTORY_SEEDED_KEY, TENNIS_SEEDED_KEY, type HistorySeedSummary,
 } from "./real-history-backfill";
@@ -366,7 +366,15 @@ export async function bootstrapState(opts?: { ingestSummary?: IngestSummary | nu
     })),
   }));
 
-  const open = signals.filter((s) => s.status === "OPEN");
+  // v3.3.2 §3 — max ONE card per fixture in Predictions Hub (highest
+  // noLossProb wins). ACCA rows are multi-fixture cards and stay outside the
+  // gate. Fixtures like `Chapecoense vs Palmeiras` can never emit 3 cards again.
+  const openAll = signals.filter((s) => s.status === "OPEN");
+  const openAccas = openAll.filter((s) => s.line === "ACCA2");
+  const open = [
+    ...openAccas,
+    ...dedupeOneCardPerFixture(openAll.filter((s) => s.line !== "ACCA2")),
+  ];
   // v3.3 — the settlement queue (PENDING_SETTLEMENT) is hidden from both lists.
   const settled = signals.filter((s) => isDecided(s.status));
   const [openSignals, settledSignals] = await Promise.all([
@@ -500,6 +508,17 @@ export async function ensureBootstrapState(): Promise<AppState> {
     }
   } catch (err) {
     console.error("v3.3.1 data hygiene failed (contained)", err);
+  }
+  // v3.3.2 §4.3 — ONE-TIME real-bookmaker rebuild: previous NBA records and
+  // tennis ret/w-o games are re-aligned to the v3.3.2 rules in the background
+  // (single-flight — never blocks the bootstrap response).
+  try {
+    const v332 = await runV332RealismMigration();
+    if (!v332.skipped) {
+      console.log(`[v3.3.2] realism migration: ${v332.purgedNbaRows} NBA rows + ${v332.purgedTennisRetRows} tennis-ret rows purged — background rebuild fired`);
+    }
+  } catch (err) {
+    console.error("v3.3.2 realism migration failed (contained)", err);
   }
   // v2.7.2 hotfix — 30-day tennis backfill runs NON-BLOCKING (background,
   // single-flight): the ESPN range fetch + hundreds of upserts used to run
@@ -696,9 +715,11 @@ export async function runV33LedgerMigration(opts?: { force?: boolean }): Promise
 
 let v33SeedInFlight: Promise<HistorySeedSummary> | null = null;
 
-/** v3.3 single-flight background reseed (25/25/25 quotas + NBA backfill). */
+/** v3.3 single-flight background reseed (25/25/25 quotas + NBA backfill).
+ *  v3.3.2 — observable start/completion so a hung rebuild is visible in dev.log. */
 export function runV33SeedBackground(): Promise<HistorySeedSummary> {
   if (!v33SeedInFlight) {
+    console.log("[v3.3] background reseed fired (single-flight)");
     v33SeedInFlight = seedRealHistory({ force: true })
       .then((summary) => {
         console.log(
@@ -717,6 +738,8 @@ export function runV33SeedBackground(): Promise<HistorySeedSummary> {
         } satisfies HistorySeedSummary;
       })
       .finally(() => { v33SeedInFlight = null; });
+  } else {
+    console.log("[v3.3] background reseed already in flight — join");
   }
   return v33SeedInFlight;
 }
@@ -829,6 +852,104 @@ export async function runV331DataHygieneMigration(opts?: { force?: boolean }): P
   }
   void runV33SeedBackground(); // calibrated rebuild from the REAL 14-day backfill
   return { skipped: false, purgedTestRows, purgedNbaRows, ranAt };
+}
+
+export interface V332RealismSummary {
+  skipped: boolean;
+  purgedNbaRows: number;
+  purgedTennisRetRows: number;
+  ranAt: string;
+}
+
+const V332_REALISM_KEY = "v332RealismMigrationAt";
+
+/** Tennis retirement marker — identical vocabulary to extractTennisSetResult. */
+const RETIRED_DETAIL_RE = /\b(ret\.?|retired|walkover|w\/o)\b/i;
+
+/**
+ * v3.3.2 §4.3 — ONE-TIME real-bookmaker rebuild (contained like v3.2/3.3/3.3.1):
+ *   a) NBA — every SETTLED basketball row (the v3.3/v3.3.1 vocabulary incl.
+ *      the now-ILLEGAL favourite +4.5 spread) plus its SHIELD vetoes is
+ *      purged, and the single-flight background reseed rebuilds the records
+ *      under the v3.3.2 real-bookmaker rules (Match Winner / whole-number
+ *      handicap with push shield; +4.5 on a favourite can never exist again).
+ *   b) Tennis — settled LOST rows on ret/w-o matches for the retirement-
+ *      protected markets (TENNIS_SET_PLUS_15 / TENNIS_ML) are purged: the
+ *      new settlement rules make a retirement a WON (≥1 set won) or a PUSH
+ *      (stake returned) — never a LOST verdict.
+ * OPEN live signals are NEVER touched; the migration flag is stamped
+ * IMMEDIATELY so the destructive purge can never re-run.
+ */
+export async function runV332RealismMigration(opts?: { force?: boolean }): Promise<V332RealismSummary> {
+  const ranAt = new Date().toISOString();
+  if (!opts?.force) {
+    const seen = await getSetting(V332_REALISM_KEY);
+    if (seen) return { skipped: true, purgedNbaRows: 0, purgedTennisRetRows: 0, ranAt };
+  }
+  let purgedNbaRows = 0;
+  let purgedTennisRetRows = 0;
+
+  // a) NBA rebuild purge — settled rows under the old vocabulary, PLUS every
+  //    OPEN row carrying the now-ILLEGAL favourite +4.5 spread (the patch's
+  //    golden rule: a favourite NEVER gets a plus handicap — not even live).
+  try {
+    const s = await db.signal.deleteMany({
+      where: { sport: "basketball", status: { not: "OPEN" } },
+    });
+    purgedNbaRows += s.count;
+  } catch (err) {
+    console.error("v3.3.2 NBA signal purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const alt = await db.signal.deleteMany({
+      where: { sport: "basketball", marketKey: "NBA_ALT_SPREAD" },
+    });
+    purgedNbaRows += alt.count;
+  } catch (err) {
+    console.error("v3.3.2 NBA alt-spread purge failed (rows kept, bootstrap continues)", err);
+  }
+  try {
+    const v = await db.shadowVeto.deleteMany({
+      where: { sport: "basketball", category: "SHIELD_ENGINE" },
+    });
+    purgedNbaRows += v.count;
+  } catch (err) {
+    console.error("v3.3.2 NBA veto purge failed (rows kept, bootstrap continues)", err);
+  }
+
+  // b) Tennis retirement rebuild purge (LOST rows on ret/w-o matches only).
+  try {
+    const tennisRows = await db.match.findMany({
+      where: { sport: "tennis", status: "post", detail: { not: null } },
+      select: { id: true, detail: true },
+      orderBy: { startTime: "desc" },
+      take: 800,
+    });
+    const retIds = tennisRows
+      .filter((m) => RETIRED_DETAIL_RE.test(m.detail ?? ""))
+      .map((m) => m.id);
+    if (retIds.length > 0) {
+      const s = await db.signal.deleteMany({
+        where: {
+          sport: "tennis",
+          status: "LOST",
+          matchId: { in: retIds },
+          marketKey: { in: ["TENNIS_SET_PLUS_15", "TENNIS_ML"] },
+        },
+      });
+      purgedTennisRetRows = s.count;
+    }
+  } catch (err) {
+    console.error("v3.3.2 tennis-ret purge failed (rows kept, bootstrap continues)", err);
+  }
+
+  try {
+    await setSetting(V332_REALISM_KEY, ranAt);
+  } catch (err) {
+    console.error("v3.3.2 realism flag stamping failed", err);
+  }
+  void runV33SeedBackground(); // single-flight rebuild under the v3.3.2 rules
+  return { skipped: false, purgedNbaRows, purgedTennisRetRows, ranAt };
 }
 
 /**

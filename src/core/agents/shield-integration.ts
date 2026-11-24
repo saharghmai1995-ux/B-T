@@ -95,6 +95,8 @@ export async function generateShieldForFixture(params: {
   nba?: { features: NbaMatchFeatures; completeness: number; notes: string[] };
   /** v3.3.1 — REAL ESPN event id for the keyless market-prior fetch (NBA path). */
   espnEventId?: string;
+  /** v3.3.2 §4.1 — fitted Dixon-Coles lambdas feeding the OVER_2_0 gate. */
+  lambdas?: { lh: number; la: number } | null;
 }): Promise<ShieldOutcome> {
   const { ctx, quotes, refOdds, statHome, statAway, calib } = params;
   try {
@@ -154,6 +156,8 @@ export async function generateShieldForFixture(params: {
             pExact2: quant.pExact2,
             pUnder3: quant.pUnder3,
             pExact3: quant.pExact3,
+            // v3.3.2 §4.1 — real-market OVER_2_0 gate (lambda floor 2.85).
+            lambdaSum: params.lambdas ? params.lambdas.lh + params.lambdas.la : null,
           })
         : buildTennisProtectedCandidates({
             homePlayer: ctx.homeName,
